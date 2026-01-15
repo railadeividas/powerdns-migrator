@@ -20,7 +20,9 @@ class AsyncZoneMigrator:
         retry_backoff: float = 0.5,
         retry_max_backoff: float = 5.0,
         retry_jitter: float = 0.1,
+        ignore_soa_serial: bool = False,
     ):
+        self.ignore_soa_serial = ignore_soa_serial
         self.source_client = (
             source
             if isinstance(source, AsyncPowerDNSClient)
@@ -134,6 +136,8 @@ class AsyncZoneMigrator:
                     source_rrset["type"],
                     self._rrset_summary(source_rrset),
                 )
+                if self.ignore_soa_serial and source_rrset["type"] == "SOA":
+                    source_rrset = self._preserve_target_soa_serial(source_rrset, target_rrset)
                 updates.append(self._rrset_change("REPLACE", source_rrset))
 
         changes = deletes + creates + updates
@@ -199,7 +203,7 @@ class AsyncZoneMigrator:
         records = rrset.get("records", [])
         normalized_records = sorted(
             (
-                record.get("content", ""),
+                self._normalize_record_content(rrset.get("type"), record.get("content", "")),
                 bool(record.get("disabled", False)),
                 record.get("priority"),
             )
@@ -234,6 +238,39 @@ class AsyncZoneMigrator:
         if rrset.get("comments"):
             payload["comments"] = rrset["comments"]
         return payload
+
+    def _normalize_record_content(self, rrtype: str | None, content: str) -> str:
+        if self.ignore_soa_serial and rrtype == "SOA":
+            return self._normalize_soa_content(content, serial_override="0")
+        return content
+
+    def _normalize_soa_content(self, content: str, serial_override: str | None = None) -> str:
+        parts = content.split()
+        if len(parts) < 7:
+            return content
+        if serial_override is not None:
+            parts[2] = serial_override
+        return " ".join(parts)
+
+    def _preserve_target_soa_serial(self, source_rrset: Dict[str, Any], target_rrset: Dict[str, Any]) -> Dict[str, Any]:
+        target_records = target_rrset.get("records", [])
+        if not target_records:
+            return source_rrset
+        target_content = target_records[0].get("content", "")
+        target_parts = target_content.split()
+        if len(target_parts) < 7:
+            return source_rrset
+        target_serial = target_parts[2]
+        updated = dict(source_rrset)
+        updated_records = []
+        for record in source_rrset.get("records", []):
+            content = record.get("content", "")
+            new_content = self._normalize_soa_content(content, serial_override=target_serial)
+            updated_record = dict(record)
+            updated_record["content"] = new_content
+            updated_records.append(updated_record)
+        updated["records"] = updated_records
+        return updated
 
     def _rrset_summary(self, rrset: Dict[str, Any]) -> Dict[str, Any]:
         return {

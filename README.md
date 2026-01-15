@@ -42,6 +42,7 @@ Key flags:
 - `--retry-backoff`: base backoff seconds between retries
 - `--retry-max-backoff`: maximum backoff seconds between retries
 - `--retry-jitter`: max random jitter seconds added to backoff
+- `--ignore-soa-serial`: ignore SOA serial changes and keep target serial
 - `--on-error`: batch behavior on API error (continue or stop)
 - `--zones-file`: migrate zones from a file (one per line)
 - `--concurrency`: parallel migrations when using `--zones-file`
