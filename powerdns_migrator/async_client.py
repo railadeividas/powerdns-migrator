@@ -82,7 +82,13 @@ class AsyncPowerDNSClient:
                     break
                 delay = self._retry_delay(attempt)
                 logging.debug(
-                    "Retrying %s %s in %.2fs after error: %s", method, url, delay, exc
+                    "Retrying %s %s in %.2fs (attempt %d/%d) after error: %s",
+                    method,
+                    url,
+                    delay,
+                    attempt + 1,
+                    self.retries,
+                    exc,
                 )
                 await asyncio.sleep(delay)
         raise PowerDNSAPIError(

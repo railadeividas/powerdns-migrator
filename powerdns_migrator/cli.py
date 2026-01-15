@@ -88,6 +88,11 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         help="Max random jitter seconds added to backoff",
     )
     parser.add_argument(
+        "--ignore-soa-serial",
+        action="store_true",
+        help="Ignore SOA serial changes and keep target serial",
+    )
+    parser.add_argument(
         "--on-error",
         choices=["continue", "stop"],
         default="continue",
@@ -152,6 +157,7 @@ async def _run_single(args: argparse.Namespace) -> int:
         retry_backoff=args.retry_backoff,
         retry_max_backoff=args.retry_max_backoff,
         retry_jitter=args.retry_jitter,
+        ignore_soa_serial=args.ignore_soa_serial,
     )
     try:
         result = await migrator.migrate(
@@ -184,6 +190,7 @@ async def _run_batch(args: argparse.Namespace) -> int:
         retry_backoff=args.retry_backoff,
         retry_max_backoff=args.retry_max_backoff,
         retry_jitter=args.retry_jitter,
+        ignore_soa_serial=args.ignore_soa_serial,
     )
     zones_path = Path(args.zones_file)
     if not zones_path.exists():

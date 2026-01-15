@@ -18,6 +18,7 @@ python3 -m powerdns_migrator \
   --timeout 10 \
   --on-error stop \
   --progress-interval 1 \
+  --ignore-soa-serial \
   --zones-file examples/bash/zones.txt
   # --recreate \
   # --dry-run \
