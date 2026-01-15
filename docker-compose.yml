@@ -1,0 +1,88 @@
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: pdns-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+    ports:
+      - "3306:3306"
+    tmpfs:
+      - /var/lib/mysql
+    volumes:
+      # - pdns_mysql_data:/var/lib/mysql
+      - ./docker/mysql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p$$MYSQL_ROOT_PASSWORD"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  pdns_auth_1:
+    build:
+      context: ./docker/pdns
+    container_name: pdns-auth-1
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      PDNS_gmysql_host: mysql
+      PDNS_gmysql_user: pdns1
+      PDNS_gmysql_password: pdns1pass
+      PDNS_gmysql_dbname: pdns1
+      PDNS_api: "yes"
+      PDNS_api_key: pdns1key
+      PDNS_webserver: "yes"
+      PDNS_webserver_address: 0.0.0.0
+      PDNS_webserver_port: 8081
+      PDNS_webserver_allow_from: 0.0.0.0/0
+      PDNS_loglevel: 4
+      PDNS_seed_zones: "true"
+    ports:
+      - "5001:53/tcp"
+      - "5001:53/udp"
+      - "8081:8081"
+    volumes:
+      - ./docker/zones:/zones:ro
+    healthcheck:
+      test: ["CMD-SHELL", "/usr/bin/pdns_control rping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+
+  pdns_auth_2:
+    build:
+      context: ./docker/pdns
+    container_name: pdns-auth-2
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      PDNS_gmysql_host: mysql
+      PDNS_gmysql_user: pdns2
+      PDNS_gmysql_password: pdns2pass
+      PDNS_gmysql_dbname: pdns2
+      PDNS_api: "yes"
+      PDNS_api_key: pdns2key
+      PDNS_webserver: "yes"
+      PDNS_webserver_address: 0.0.0.0
+      PDNS_webserver_port: 8081
+      PDNS_webserver_allow_from: 0.0.0.0/0
+      PDNS_loglevel: 4
+      PDNS_seed_zones: "false"
+    ports:
+      - "5002:53/tcp"
+      - "5002:53/udp"
+      - "8082:8081"
+    volumes:
+      - ./docker/zones:/zones:ro
+    healthcheck:
+      test: ["CMD-SHELL", "/usr/bin/pdns_control rping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+
+# volumes:
+#   pdns_mysql_data:

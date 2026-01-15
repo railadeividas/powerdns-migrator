@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "powerdns-migrator"
+version = "0.1.0"
+description = "CLI tool and library to migrate PowerDNS zones between servers"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "PowerDNS Migrator Authors" }]
+license = { file = "LICENSE" }
+keywords = ["powerdns", "dns", "migration", "pdns"]
+classifiers = [
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Operating System :: OS Independent",
+]
+dependencies = [
+  "aiohttp>=3.9",
+]
+
+[project.scripts]
+powerdns_migrator = "powerdns_migrator.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/your-org/powerdns-migrator"
+Repository = "https://github.com/your-org/powerdns-migrator"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["powerdns_migrator*"]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+  "asyncio: mark a test as asyncio",
+]

@@ -1,0 +1,4 @@
+$TTL 300
+@   IN SOA ns1.zone2.test. admin.zone2.test. 2026011501 3600 900 604800 300
+@   IN NS  ns1.zone2.test.
+@   IN TXT "hello from zone2"
