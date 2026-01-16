@@ -58,100 +58,60 @@ class AsyncZoneMigrator:
         self, zone_name: str, recreate: bool = False, dry_run: bool = False
     ) -> Dict[str, Any]:
         zone = normalize_zone_name(zone_name)
-        logging.debug("Starting migration for zone %s", zone)
         source_zone = await self.source_client.get_zone(zone)
         sanitized = self._sanitize_zone(source_zone)
+        target_zone = await self.target_client.zone_exists(zone)
 
-        if dry_run:
-            logging.debug("Dry run: skipping writes for zone %s", zone)
-            return sanitized
+        if target_zone:
+            changes = self._build_changes(zone, sanitized, target_zone)
+            if changes:
+                logging.debug(
+                    "Pending zone %s rrset changes: %d",
+                    zone,
+                    len(changes),
+                )
 
-        if await self.target_client.zone_exists(zone):
-            if recreate:
-                logging.debug("Zone %s exists on target; overwriting", zone)
-                await self.target_client.delete_zone(zone)
-                created = await self.target_client.create_zone(sanitized)
-                logging.debug("Zone %s recreated on target", zone)
-                return created
-            return await self._sync_existing_zone(zone, sanitized)
+                if recreate:
+                    logging.debug("Zone %s recreating due to rrset changes", zone)
+                    if not dry_run:
+                        await self.target_client.delete_zone(zone)
+                        created = await self.target_client.create_zone(sanitized)
+                    logging.debug("Zone %s recreated on target", zone)
+                    return {
+                        "source_zone": sanitized,
+                        "target_zone": created if not dry_run else {},
+                        "changes": changes,
+                        "migrator_action": "RECREATE_ZONE",
+                    }
 
-        created = await self.target_client.create_zone(sanitized)
+                if not dry_run:
+                    await self.target_client.patch_zone_rrsets(zone, changes)
+                logging.debug("Zone %s patched on target", zone)
+                return {
+                    "source_zone": sanitized,
+                    "target_zone": {},
+                    "changes": changes,
+                    "migrator_action": "PATCH_ZONE",
+                }
+            else:
+                logging.debug("Zone %s is already in sync", zone)
+
+            return {
+                "source_zone": sanitized,
+                "target_zone": target_zone if not dry_run else {},
+                "changes": {},
+                "migrator_action": "NOOP",
+            }
+
+        if not dry_run:
+            created = await self.target_client.create_zone(sanitized)
         logging.debug("Zone %s created on target", zone)
-        return created
-
-    async def _sync_existing_zone(
-        self, zone_name: str, source_zone: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        target_zone = await self.target_client.get_zone(zone_name)
-        source_rrsets = {
-            self._rrset_key(rr): rr for rr in source_zone.get("rrsets", [])
+        return {
+            "source_zone": sanitized,
+            "target_zone": created if not dry_run else {},
+            "changes": {},
+            "migrator_action": "CREATE_ZONE",
         }
-        target_rrsets = {
-            self._rrset_key(rr): rr for rr in target_zone.get("rrsets", [])
-        }
-
-        deletes: List[Dict[str, Any]] = []
-        updates: List[Dict[str, Any]] = []
-        creates: List[Dict[str, Any]] = []
-
-        for key, target_rrset in target_rrsets.items():
-            if key not in source_rrsets:
-                logging.debug(
-                    "Zone %s deleting rrset %s/%s",
-                    zone_name,
-                    target_rrset["name"],
-                    target_rrset["type"],
-                )
-                deletes.append(self._rrset_change("DELETE", target_rrset))
-
-        for key, source_rrset in source_rrsets.items():
-            target_rrset = target_rrsets.get(key)
-            if target_rrset is None:
-                logging.debug(
-                    "Zone %s adding rrset %s/%s",
-                    zone_name,
-                    source_rrset["name"],
-                    source_rrset["type"],
-                )
-                creates.append(self._rrset_change("REPLACE", source_rrset))
-                continue
-            if not self._rrset_equal(source_rrset, target_rrset):
-                logging.debug(
-                    "Zone %s updating rrset %s/%s",
-                    zone_name,
-                    source_rrset["name"],
-                    source_rrset["type"],
-                )
-                logging.debug(
-                    "Zone %s rrset %s/%s before: %s",
-                    zone_name,
-                    target_rrset["name"],
-                    target_rrset["type"],
-                    self._rrset_summary(target_rrset),
-                )
-                logging.debug(
-                    "Zone %s rrset %s/%s after: %s",
-                    zone_name,
-                    source_rrset["name"],
-                    source_rrset["type"],
-                    self._rrset_summary(source_rrset),
-                )
-                if self.ignore_soa_serial and source_rrset["type"] == "SOA":
-                    source_rrset = self._preserve_target_soa_serial(source_rrset, target_rrset)
-                updates.append(self._rrset_change("REPLACE", source_rrset))
-
-        changes = deletes + creates + updates
-        if changes:
-            logging.debug(
-                "Zone %s rrset changes: %d",
-                zone_name,
-                len(changes),
-            )
-            await self.target_client.patch_zone_rrsets(zone_name, changes)
-        else:
-            logging.debug("Zone %s is already in sync", zone_name)
-
-        return await self.target_client.get_zone(zone_name)
 
     def _sanitize_zone(self, zone: Dict[str, Any]) -> Dict[str, Any]:
         keep_keys = {
@@ -203,7 +163,9 @@ class AsyncZoneMigrator:
         records = rrset.get("records", [])
         normalized_records = sorted(
             (
-                self._normalize_record_content(rrset.get("type"), record.get("content", "")),
+                self._normalize_record_content(
+                    rrset.get("type"), record.get("content", "")
+                ),
                 bool(record.get("disabled", False)),
                 record.get("priority"),
             )
@@ -239,12 +201,84 @@ class AsyncZoneMigrator:
             payload["comments"] = rrset["comments"]
         return payload
 
+    def _build_changes(
+        self,
+        zone_name: str,
+        source_zone: Dict[str, Any],
+        target_zone: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        source_rrsets = {
+            self._rrset_key(rr): rr for rr in source_zone.get("rrsets", [])
+        }
+        target_rrsets = {
+            self._rrset_key(rr): rr for rr in target_zone.get("rrsets", [])
+        }
+
+        deletes: List[Dict[str, Any]] = []
+        updates: List[Dict[str, Any]] = []
+        creates: List[Dict[str, Any]] = []
+
+        for key, target_rrset in target_rrsets.items():
+            if key not in source_rrsets:
+                logging.debug(
+                    "Pending zone %s rrset deletion: %s/%s",
+                    zone_name,
+                    target_rrset["name"],
+                    target_rrset["type"],
+                )
+                deletes.append(self._rrset_change("DELETE", target_rrset))
+
+        for key, source_rrset in source_rrsets.items():
+            target_rrset = target_rrsets.get(key)
+            if target_rrset is None:
+                continue
+            if not self._rrset_equal(source_rrset, target_rrset):
+                logging.debug(
+                    "Pending zone %s rrset update: %s/%s",
+                    zone_name,
+                    source_rrset["name"],
+                    source_rrset["type"],
+                )
+                logging.debug(
+                    "Pending zone %s rrset %s/%s before: %s",
+                    zone_name,
+                    target_rrset["name"],
+                    target_rrset["type"],
+                    self._rrset_summary(target_rrset),
+                )
+                logging.debug(
+                    "Pending zone %s rrset %s/%s after: %s",
+                    zone_name,
+                    source_rrset["name"],
+                    source_rrset["type"],
+                    self._rrset_summary(source_rrset),
+                )
+                if self.ignore_soa_serial and source_rrset["type"] == "SOA":
+                    source_rrset = self._preserve_target_soa_serial(
+                        source_rrset, target_rrset
+                    )
+                updates.append(self._rrset_change("REPLACE", source_rrset))
+
+        for key, source_rrset in source_rrsets.items():
+            if key not in target_rrsets:
+                logging.debug(
+                    "Pending zone %s rrset creation: %s/%s",
+                    zone_name,
+                    source_rrset["name"],
+                    source_rrset["type"],
+                )
+                creates.append(self._rrset_change("REPLACE", source_rrset))
+
+        return deletes + updates + creates
+
     def _normalize_record_content(self, rrtype: str | None, content: str) -> str:
         if self.ignore_soa_serial and rrtype == "SOA":
             return self._normalize_soa_content(content, serial_override="0")
         return content
 
-    def _normalize_soa_content(self, content: str, serial_override: str | None = None) -> str:
+    def _normalize_soa_content(
+        self, content: str, serial_override: str | None = None
+    ) -> str:
         parts = content.split()
         if len(parts) < 7:
             return content
@@ -252,7 +286,9 @@ class AsyncZoneMigrator:
             parts[2] = serial_override
         return " ".join(parts)
 
-    def _preserve_target_soa_serial(self, source_rrset: Dict[str, Any], target_rrset: Dict[str, Any]) -> Dict[str, Any]:
+    def _preserve_target_soa_serial(
+        self, source_rrset: Dict[str, Any], target_rrset: Dict[str, Any]
+    ) -> Dict[str, Any]:
         target_records = target_rrset.get("records", [])
         if not target_records:
             return source_rrset
@@ -265,7 +301,9 @@ class AsyncZoneMigrator:
         updated_records = []
         for record in source_rrset.get("records", []):
             content = record.get("content", "")
-            new_content = self._normalize_soa_content(content, serial_override=target_serial)
+            new_content = self._normalize_soa_content(
+                content, serial_override=target_serial
+            )
             updated_record = dict(record)
             updated_record["content"] = new_content
             updated_records.append(updated_record)

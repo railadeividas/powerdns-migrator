@@ -160,9 +160,7 @@ async def _run_single(args: argparse.Namespace) -> int:
         ignore_soa_serial=args.ignore_soa_serial,
     )
     try:
-        result = await migrator.migrate(
-            args.zone, recreate=args.recreate, dry_run=args.dry_run
-        )
+        await migrator.migrate(args.zone, recreate=args.recreate, dry_run=args.dry_run)
     except (PowerDNSAPIError, MigrationError) as exc:
         logging.error("%s", exc)
         return 1
@@ -173,10 +171,9 @@ async def _run_single(args: argparse.Namespace) -> int:
             pass
 
     if args.dry_run:
-        rrsets_count = len(result.get("rrsets", [])) if isinstance(result, dict) else 0
-        logging.info("Dry run complete; target would receive %d rrsets", rrsets_count)
+        logging.info("Zone %s dry run successful", args.zone)
     else:
-        logging.info("Zone %s migrated successfully", args.zone)
+        logging.info("Zone %s migration successful", args.zone)
     return 0
 
 
