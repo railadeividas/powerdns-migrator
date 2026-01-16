@@ -3,6 +3,12 @@ from __future__ import annotations
 from typing import Optional
 
 
+def format_exception_message(exc: Exception | None) -> str:
+    if exc is None:
+        return "unknown error"
+    return f"{exc.__class__.__name__}: {exc}"
+
+
 class PowerDNSAPIError(RuntimeError):
     """
     Exception raised when a PowerDNS API request returns a non-successful response.

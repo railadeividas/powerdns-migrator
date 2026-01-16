@@ -78,6 +78,8 @@ run_pdns_migrator() {
   [[ "$dry_run" == true ]] && cmd+=(--dry-run)
   [[ "$recreate" == true ]] && cmd+=(--recreate)
   [[ "$auto_fix" == true ]] && cmd+=(--auto-fix-cname-conflicts)
+  [[ "$auto_fix" == true ]] && cmd+=(--auto-fix-double-cname-conflicts)
+  [[ "$auto_fix" == true ]] && cmd+=(--normalize-txt-escapes)
 
   "${cmd[@]}"
 }

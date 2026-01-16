@@ -7,7 +7,7 @@ from typing import Any, Dict, cast
 
 import aiohttp
 
-from .errors import PowerDNSAPIError
+from .errors import PowerDNSAPIError, format_exception_message
 from .utils import normalize_zone_name
 from .config import PowerDNSConnection
 
@@ -97,7 +97,7 @@ class AsyncPowerDNSClient:
             method=method,
             url=url,
             error_reason="failed after retries",
-            error_message=str(last_error),
+            error_message=format_exception_message(last_error),
         )
 
     async def _request_ok(self, method: str, path: str, **kwargs: Any) -> None:
@@ -146,7 +146,7 @@ class AsyncPowerDNSClient:
             method=method,
             url=url,
             error_reason="failed after retries",
-            error_message=str(last_error),
+            error_message=format_exception_message(last_error),
         )
 
     async def get_zone(self, zone_name: str) -> Dict[str, Any]:

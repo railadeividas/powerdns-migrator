@@ -23,10 +23,12 @@ class AsyncZoneMigrator:
         ignore_soa_serial: bool = False,
         auto_fix_cname_conflicts: bool = False,
         auto_fix_double_cname_conflicts: bool = False,
+        normalize_txt_escapes: bool = False,
     ):
         self.ignore_soa_serial = ignore_soa_serial
         self.auto_fix_cname_conflicts = auto_fix_cname_conflicts
         self.auto_fix_double_cname_conflicts = auto_fix_double_cname_conflicts
+        self.normalize_txt_escapes = normalize_txt_escapes
         self.source_client = (
             source
             if isinstance(source, AsyncPowerDNSClient)
@@ -367,7 +369,40 @@ class AsyncZoneMigrator:
     def _normalize_record_content(self, rrtype: str | None, content: str) -> str:
         if self.ignore_soa_serial and rrtype == "SOA":
             return self._normalize_soa_content(content, serial_override="0")
+        if self.normalize_txt_escapes and rrtype in {"TXT", "SPF"}:
+            return self._decode_decimal_escapes(content)
         return content
+
+    def _decode_decimal_escapes(self, content: str) -> str:
+        """Decode decimal escape sequences (e.g. \\239\\191\\189) to raw bytes.
+
+        PowerDNS backends may represent the same binary content differently:
+        - As raw UTF-8 bytes (e.g. the actual replacement character)
+        - As escaped decimal sequences (e.g. \\239\\191\\189 per RFC 1035)
+
+        This normalizes both representations to raw bytes for comparison.
+        We convert the string to bytes, decode escape sequences, then re-decode as UTF-8.
+        """
+        # Convert string to bytes (each char as its byte value in latin-1)
+        # This preserves raw bytes that are already in the string
+        result_bytes = bytearray()
+        i = 0
+        while i < len(content):
+            if content[i] == "\\" and i + 3 < len(content):
+                # Check if next 3 chars are decimal digits
+                maybe_decimal = content[i + 1 : i + 4]
+                if maybe_decimal.isdigit():
+                    byte_val = int(maybe_decimal, 10)
+                    if byte_val <= 255:
+                        result_bytes.append(byte_val)
+                        i += 4
+                        continue
+            # Encode the character as UTF-8 bytes
+            result_bytes.extend(content[i].encode("utf-8"))
+            i += 1
+
+        # Decode back to string as UTF-8, replacing invalid sequences
+        return result_bytes.decode("utf-8", errors="replace")
 
     def _normalize_soa_content(
         self, content: str, serial_override: str | None = None
