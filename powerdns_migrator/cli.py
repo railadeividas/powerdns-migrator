@@ -98,6 +98,11 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         help="Drop non-CNAME rrsets sharing a name with a CNAME",
     )
     parser.add_argument(
+        "--auto-fix-double-cname-conflicts",
+        action="store_true",
+        help="Trim multi-record CNAME rrsets to a single record (last one wins)",
+    )
+    parser.add_argument(
         "--on-error",
         choices=["continue", "stop"],
         default="continue",
@@ -164,6 +169,7 @@ async def _run_single(args: argparse.Namespace) -> int:
         retry_jitter=args.retry_jitter,
         ignore_soa_serial=args.ignore_soa_serial,
         auto_fix_cname_conflicts=args.auto_fix_cname_conflicts,
+        auto_fix_double_cname_conflicts=args.auto_fix_double_cname_conflicts,
     )
     try:
         await migrator.migrate(args.zone, recreate=args.recreate, dry_run=args.dry_run)
@@ -195,6 +201,7 @@ async def _run_batch(args: argparse.Namespace) -> int:
         retry_jitter=args.retry_jitter,
         ignore_soa_serial=args.ignore_soa_serial,
         auto_fix_cname_conflicts=args.auto_fix_cname_conflicts,
+        auto_fix_double_cname_conflicts=args.auto_fix_double_cname_conflicts,
     )
     zones_path = Path(args.zones_file)
     if not zones_path.exists():

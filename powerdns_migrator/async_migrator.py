@@ -22,9 +22,11 @@ class AsyncZoneMigrator:
         retry_jitter: float = 0.1,
         ignore_soa_serial: bool = False,
         auto_fix_cname_conflicts: bool = False,
+        auto_fix_double_cname_conflicts: bool = False,
     ):
         self.ignore_soa_serial = ignore_soa_serial
         self.auto_fix_cname_conflicts = auto_fix_cname_conflicts
+        self.auto_fix_double_cname_conflicts = auto_fix_double_cname_conflicts
         self.source_client = (
             source
             if isinstance(source, AsyncPowerDNSClient)
@@ -171,6 +173,19 @@ class AsyncZoneMigrator:
         cleaned: List[Dict[str, Any]] = []
         for name, grouped in rrsets_by_name.items():
             cname_rrsets = [rr for rr in grouped if rr.get("type") == "CNAME"]
+            if self.auto_fix_double_cname_conflicts:
+                for rrset in cname_rrsets:
+                    records = rrset.get("records", [])
+                    if len(records) > 1:
+                        removed_records = records[1:]
+                        kept_record = records[:1]
+                        rrset["records"] = kept_record
+                        logging.warning(
+                            "Auto-fix: trimming CNAME rrset %s to first record; kept=%s removed=%s",
+                            name,
+                            [record.get("content", "") for record in kept_record],
+                            [record.get("content", "") for record in removed_records],
+                        )
             if not cname_rrsets:
                 cleaned.extend(grouped)
                 continue
@@ -179,11 +194,24 @@ class AsyncZoneMigrator:
                 removed_types = sorted(
                     {rr.get("type", "UNKNOWN") for rr in cname_rrsets}
                 )
+                removed_records = [
+                    record.get("content", "")
+                    for rr in cname_rrsets
+                    for record in rr.get("records", [])
+                ]
+                kept_records = [
+                    record.get("content", "")
+                    for rr in grouped
+                    if rr not in cname_rrsets
+                    for record in rr.get("records", [])
+                ]
                 cleaned.extend([rr for rr in grouped if rr not in cname_rrsets])
                 logging.warning(
-                    "Auto-fix: dropping %s rrsets for apex %s because CNAME is invalid",
+                    "Auto-fix: dropping %s rrsets for apex %s because CNAME is invalid; kept=%s removed=%s",
                     ", ".join(removed_types),
                     name,
+                    kept_records,
+                    removed_records,
                 )
                 continue
 
@@ -196,10 +224,23 @@ class AsyncZoneMigrator:
                         if rr not in cname_rrsets
                     }
                 )
+                kept_records = [
+                    record.get("content", "")
+                    for rr in cname_rrsets
+                    for record in rr.get("records", [])
+                ]
+                removed_records = [
+                    record.get("content", "")
+                    for rr in grouped
+                    if rr not in cname_rrsets
+                    for record in rr.get("records", [])
+                ]
                 logging.warning(
-                    "Auto-fix: dropping %s rrsets for %s because CNAME exists",
+                    "Auto-fix: dropping %s rrsets for %s because CNAME exists; kept=%s removed=%s",
                     ", ".join(removed_types),
                     name,
+                    kept_records,
+                    removed_records,
                 )
             else:
                 cleaned.extend(grouped)
