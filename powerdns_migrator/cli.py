@@ -103,6 +103,11 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         help="Trim multi-record CNAME rrsets to a single record (last one wins)",
     )
     parser.add_argument(
+        "--normalize-txt-escapes",
+        action="store_true",
+        help="Normalize TXT/SPF decimal escape sequences (e.g. \\\\239) to raw bytes for comparison",
+    )
+    parser.add_argument(
         "--on-error",
         choices=["continue", "stop"],
         default="continue",
@@ -170,6 +175,7 @@ async def _run_single(args: argparse.Namespace) -> int:
         ignore_soa_serial=args.ignore_soa_serial,
         auto_fix_cname_conflicts=args.auto_fix_cname_conflicts,
         auto_fix_double_cname_conflicts=args.auto_fix_double_cname_conflicts,
+        normalize_txt_escapes=args.normalize_txt_escapes,
     )
     try:
         await migrator.migrate(args.zone, recreate=args.recreate, dry_run=args.dry_run)
@@ -202,6 +208,7 @@ async def _run_batch(args: argparse.Namespace) -> int:
         ignore_soa_serial=args.ignore_soa_serial,
         auto_fix_cname_conflicts=args.auto_fix_cname_conflicts,
         auto_fix_double_cname_conflicts=args.auto_fix_double_cname_conflicts,
+        normalize_txt_escapes=args.normalize_txt_escapes,
     )
     zones_path = Path(args.zones_file)
     if not zones_path.exists():

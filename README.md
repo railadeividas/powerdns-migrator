@@ -45,6 +45,7 @@ Key flags:
 - `--ignore-soa-serial`: ignore SOA serial changes and keep target serial
 - `--auto-fix-cname-conflicts`: auto-fix CNAME conflicts (drop other types on same name, but drop CNAME at apex)
 - `--auto-fix-double-cname-conflicts`: trim multi-record CNAME rrsets to a single record (first one wins)
+- `--normalize-txt-escapes`: normalize TXT/SPF decimal escape sequences (e.g. `\239`) to raw bytes for comparison
 - `--on-error`: batch behavior on API error (continue or stop)
 - `--zones-file`: migrate zones from a file (one per line)
 - `--concurrency`: parallel migrations when using `--zones-file`
@@ -148,6 +149,7 @@ The migrator will report what actions would be taken (`CREATE_ZONE`, `PATCH_ZONE
 - For existing zones on the target, use `--recreate` to delete before recreate.
 - When `--auto-fix-cname-conflicts` is enabled, apex CNAMEs are removed and non-apex CNAMEs are kept while other rrsets with the same name are dropped.
 - When `--auto-fix-double-cname-conflicts` is enabled, multi-record CNAME rrsets are trimmed to the first record.
+- When `--normalize-txt-escapes` is enabled, TXT/SPF records with decimal escape sequences (e.g. `\239\191\189`) are normalized to raw bytes during comparison. This is useful when migrating between backends that represent non-ASCII content differently (e.g. MySQL vs LMDB).
 - Tested with PowerDNS API v1. Additional adjustments may be needed for specific setups (DNSSEC, presigned zones, custom backends, etc.).
 
 ## Development
