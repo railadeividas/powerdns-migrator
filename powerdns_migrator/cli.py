@@ -10,7 +10,7 @@ from typing import Optional
 
 from .async_migrator import AsyncZoneMigrator
 from .config import PowerDNSConnection
-from .errors import MigrationError, PowerDNSAPIError
+from .errors import PowerDNSAPIError
 
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
@@ -161,7 +161,7 @@ async def _run_single(args: argparse.Namespace) -> int:
     )
     try:
         await migrator.migrate(args.zone, recreate=args.recreate, dry_run=args.dry_run)
-    except (PowerDNSAPIError, MigrationError) as exc:
+    except PowerDNSAPIError as exc:
         logging.error("%s", exc)
         return 1
     finally:
@@ -218,7 +218,7 @@ async def _run_batch(args: argparse.Namespace) -> int:
                 )
                 async with counter_lock:
                     success += 1
-            except (PowerDNSAPIError, MigrationError) as exc:
+            except PowerDNSAPIError as exc:
                 logging.error("Zone %s failed: %s", zone, exc)
                 async with counter_lock:
                     failed += 1
