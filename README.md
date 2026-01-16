@@ -44,6 +44,7 @@ Key flags:
 - `--retry-jitter`: max random jitter seconds added to backoff
 - `--ignore-soa-serial`: ignore SOA serial changes and keep target serial
 - `--auto-fix-cname-conflicts`: auto-fix CNAME conflicts (drop other types on same name, but drop CNAME at apex)
+- `--auto-fix-double-cname-conflicts`: trim multi-record CNAME rrsets to a single record (first one wins)
 - `--on-error`: batch behavior on API error (continue or stop)
 - `--zones-file`: migrate zones from a file (one per line)
 - `--concurrency`: parallel migrations when using `--zones-file`
@@ -146,6 +147,7 @@ The migrator will report what actions would be taken (`CREATE_ZONE`, `PATCH_ZONE
 - The migrator drops read-only fields returned by PowerDNS (`id`, `url`, `serial`, `notified_serial`, etc.).
 - For existing zones on the target, use `--recreate` to delete before recreate.
 - When `--auto-fix-cname-conflicts` is enabled, apex CNAMEs are removed and non-apex CNAMEs are kept while other rrsets with the same name are dropped.
+- When `--auto-fix-double-cname-conflicts` is enabled, multi-record CNAME rrsets are trimmed to the first record.
 - Tested with PowerDNS API v1. Additional adjustments may be needed for specific setups (DNSSEC, presigned zones, custom backends, etc.).
 
 ## Development
