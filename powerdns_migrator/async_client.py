@@ -145,13 +145,12 @@ class AsyncPowerDNSClient:
         zone = normalize_zone_name(zone_name)
         return await self._request_json("GET", f"/zones/{zone}")
 
-    async def zone_exists(self, zone_name: str) -> bool:
+    async def zone_exists(self, zone_name: str) -> Dict[str, Any] | None:
         try:
-            await self.get_zone(zone_name)
-            return True
+            return await self.get_zone(zone_name)
         except PowerDNSAPIError as exc:
             if exc.status == 404:
-                return False
+                return None
             raise
 
     async def delete_zone(self, zone_name: str) -> None:
