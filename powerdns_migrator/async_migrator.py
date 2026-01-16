@@ -21,8 +21,10 @@ class AsyncZoneMigrator:
         retry_max_backoff: float = 5.0,
         retry_jitter: float = 0.1,
         ignore_soa_serial: bool = False,
+        auto_fix_cname_conflicts: bool = False,
     ):
         self.ignore_soa_serial = ignore_soa_serial
+        self.auto_fix_cname_conflicts = auto_fix_cname_conflicts
         self.source_client = (
             source
             if isinstance(source, AsyncPowerDNSClient)
@@ -127,6 +129,10 @@ class AsyncZoneMigrator:
         sanitized["name"] = normalize_zone_name(zone["name"])
         sanitized.setdefault("kind", "Native")
         sanitized["rrsets"] = self._sanitize_rrsets(zone.get("rrsets", []))
+        if self.auto_fix_cname_conflicts:
+            sanitized["rrsets"] = self._drop_cname_conflicts(
+                sanitized["rrsets"], sanitized["name"]
+            )
         return sanitized
 
     def _sanitize_rrsets(self, rrsets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -151,6 +157,52 @@ class AsyncZoneMigrator:
             if rr.get("comments"):
                 cleaned_rr["comments"] = rr["comments"]
             cleaned.append(cleaned_rr)
+        return cleaned
+
+    def _drop_cname_conflicts(
+        self, rrsets: List[Dict[str, Any]], zone_name: str
+    ) -> List[Dict[str, Any]]:
+        apex_name = normalize_zone_name(zone_name)
+        rrsets_by_name: Dict[str, List[Dict[str, Any]]] = {}
+        for rrset in rrsets:
+            name = normalize_zone_name(rrset["name"])
+            rrsets_by_name.setdefault(name, []).append(rrset)
+
+        cleaned: List[Dict[str, Any]] = []
+        for name, grouped in rrsets_by_name.items():
+            cname_rrsets = [rr for rr in grouped if rr.get("type") == "CNAME"]
+            if not cname_rrsets:
+                cleaned.extend(grouped)
+                continue
+
+            if name == apex_name:
+                removed_types = sorted(
+                    {rr.get("type", "UNKNOWN") for rr in cname_rrsets}
+                )
+                cleaned.extend([rr for rr in grouped if rr not in cname_rrsets])
+                logging.warning(
+                    "Auto-fix: dropping %s rrsets for apex %s because CNAME is invalid",
+                    ", ".join(removed_types),
+                    name,
+                )
+                continue
+
+            if len(grouped) > len(cname_rrsets):
+                cleaned.extend(cname_rrsets)
+                removed_types = sorted(
+                    {
+                        rr.get("type", "UNKNOWN")
+                        for rr in grouped
+                        if rr not in cname_rrsets
+                    }
+                )
+                logging.warning(
+                    "Auto-fix: dropping %s rrsets for %s because CNAME exists",
+                    ", ".join(removed_types),
+                    name,
+                )
+            else:
+                cleaned.extend(grouped)
         return cleaned
 
     def _rrset_key(self, rrset: Dict[str, Any]) -> Tuple[str, str]:

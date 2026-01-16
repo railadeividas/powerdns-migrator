@@ -31,6 +31,7 @@ run_pdns_migrator() {
   local zones_file="$2"  # may be empty
   local dry_run="$3"     # "true" / "false"
   local recreate="$4"    # "true" / "false"
+  local auto_fix="$5"    # "true" / "false"
 
   # Must provide exactly one: zone OR zones_file
   if [[ -n "$zone" && -n "$zones_file" ]]; then
@@ -76,6 +77,7 @@ run_pdns_migrator() {
 
   [[ "$dry_run" == true ]] && cmd+=(--dry-run)
   [[ "$recreate" == true ]] && cmd+=(--recreate)
+  [[ "$auto_fix" == true ]] && cmd+=(--auto-fix-cname-conflicts)
 
   "${cmd[@]}"
 }
@@ -87,6 +89,7 @@ SHOW_TARGET_ZONES=false
 
 MIGRATE=false
 MIGRATE_DRY_RUN=false
+MIGRATE_AUTOFIX=false
 MIGRATE_RECREATE=false
 ZONE=""   # required only when --migrate is used
 ZONES_FILE=""  # required only when --migrate is used
@@ -128,6 +131,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --dry-run)
       MIGRATE_DRY_RUN=true
+      shift
+      ;;
+    --auto-fix)
+      MIGRATE_AUTOFIX=true
       shift
       ;;
     --recreate)
@@ -185,7 +192,7 @@ if [[ "$MIGRATE" == true ]]; then
     exit 1
   fi
 
-  run_pdns_migrator "$ZONE" "$ZONES_FILE" "$MIGRATE_DRY_RUN" "$MIGRATE_RECREATE"
+  run_pdns_migrator "$ZONE" "$ZONES_FILE" "$MIGRATE_DRY_RUN" "$MIGRATE_RECREATE" "$MIGRATE_AUTOFIX"
 fi
 
 
