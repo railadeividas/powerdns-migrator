@@ -25,11 +25,12 @@ dependencies = [
 ]
 
 [project.scripts]
+powerdns-migrator = "powerdns_migrator.cli:main"
 powerdns_migrator = "powerdns_migrator.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/your-org/powerdns-migrator"
-Repository = "https://github.com/your-org/powerdns-migrator"
+Homepage = "https://github.com/railadeividas/powerdns-migrator"
+Repository = "https://github.com/railadeividas/powerdns-migrator"
 
 [tool.setuptools.packages.find]
 where = ["."]
