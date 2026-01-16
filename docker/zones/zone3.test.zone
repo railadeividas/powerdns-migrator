@@ -1,4 +1,0 @@
-$TTL 300
-@   IN SOA ns1.zone3.test. admin.zone3.test. 2026011501 3600 900 604800 300
-@   IN NS  ns1.zone3.test.
-@   IN A   192.0.2.30

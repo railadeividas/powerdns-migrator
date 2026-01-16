@@ -1,0 +1,2 @@
+powerdns-migrator
+aiomysql==0.3.2
