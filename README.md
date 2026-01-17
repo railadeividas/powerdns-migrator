@@ -1,6 +1,18 @@
 # powerdns-migrator
 
-Python package and CLI to migrate zones between two PowerDNS servers using their HTTP API.
+Python package and CLI to migrate DNS zones between PowerDNS servers using their HTTP API.
+
+## Features
+
+- **CLI & Library** — Use as a command-line tool or import directly into your Python projects
+- **Async & Parallel** — Batch migrate thousands of zones concurrently with configurable parallelism
+- **Smart Sync** — Detects differences and merges only changed records, or fully recreates zones
+- **Dry-Run Mode** — Preview changes before applying them to the target server
+- **Auto-Fix CNAME Conflicts** — Automatically resolve CNAME/other record conflicts at the same name
+- **Retry with Backoff** — Configurable retries with exponential backoff and jitter for transient errors
+- **TXT Escape Normalization** — Handle different TXT record encodings across backends (MySQL, etc.)
+- **Error Handling** — Choose to stop or continue on errors during batch migrations
+- **Progress Reporting** — Real-time progress logs for large batch migrations
 
 ## Install
 
@@ -34,7 +46,7 @@ powerdns-migrate \
 
 Key flags:
 - `--server-id`: PowerDNS server id (default: `localhost`)
-- `--recreate`: delete target zone if it already exists
+- `--recreate`: delete and recreate target zone if it already exists (without this flag, changes are merged)
 - `--dry-run`: fetch and validate zones without making changes to target server
 - `--insecure-source` / `--insecure-target`: skip TLS verification for each side
 - `--timeout`: HTTP timeout in seconds (default: 10)
@@ -113,7 +125,7 @@ asyncio.run(run())
 | Argument | Type | Default | Description |
 |----------|------|---------|-------------|
 | `zone_name` | `str` | *required* | Zone name to migrate (e.g. `"example.com."`) |
-| `recreate` | `bool` | `False` | Delete target zone before recreating if it exists |
+| `recreate` | `bool` | `False` | Delete and recreate target zone if it exists (otherwise changes are merged) |
 | `dry_run` | `bool` | `False` | Validate and compute changes without modifying target |
 
 ### Migration Result Structure
