@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import importlib.metadata
 import logging
 import sys
 import time
@@ -14,8 +15,15 @@ from .errors import PowerDNSAPIError
 
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
+    version = importlib.metadata.version("powerdns-migrator")
     parser = argparse.ArgumentParser(
         description="Migrate a PowerDNS zone between two servers."
+    )
+    parser.add_argument(
+        "-v",
+        "--version",
+        action="version",
+        version=version,
     )
     parser.add_argument(
         "--source-url",
