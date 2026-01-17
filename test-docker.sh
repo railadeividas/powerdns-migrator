@@ -11,6 +11,17 @@
 # # with toggles
 # ./test-docker.sh --migrate --zones-file zones.txt --dry-run --recreate --debug
 
+# # fetch all zones from source (pdns-api-1) and save to file
+# ./test-docker.sh --fetch-zones zones.txt
+
+# # migrate with auto-fetch: if zones.txt doesn't exist, fetch from source first
+# ./test-docker.sh --migrate --zones-file zones.txt
+
+# # fatch and migrate in one-shot
+# ./test-docker.sh --fetch-zones zones.txt --migrate --zones-file zones.txt
+# ./test-docker.sh --fetch-zones zones.txt --migrate --zones-file zones.txt --dry-run --recreate --debug
+# ./test-docker.sh --fetch-zones zones.txt --migrate --zones-file zones.txt --dry-run --recreate --debug
+
 set -euo pipefail
 
 print_header() {
@@ -22,6 +33,32 @@ print_header() {
   echo "$line"
   echo "$text"
   echo "$line"
+  echo
+}
+
+# ---- Fetch zones from source PowerDNS (pdns-api-1) ----
+fetch_zones_from_source() {
+  local output_file="$1"
+
+  print_header "Fetching zones from source server (pdns-api-1)"
+
+  local zones
+  zones=$(curl --silent --fail --request GET "http://localhost:8081/api/v1/servers/localhost/zones" \
+    --header "X-API-Key: pdns1key" \
+    --header "Content-Type: application/json" \
+    | jq -r '.[].name')
+
+  if [[ -z "$zones" ]]; then
+    echo "Error: No zones found on source server or failed to fetch" >&2
+    return 1
+  fi
+
+  echo "$zones" > "$output_file"
+  local count
+  count=$(wc -l < "$output_file")
+  echo "Created zones file: $output_file ($count zones)"
+  # echo "Zones:"
+  # cat "$output_file" | wc
   echo
 }
 
@@ -96,6 +133,8 @@ MIGRATE_RECREATE=false
 ZONE=""   # required only when --migrate is used
 ZONES_FILE=""  # required only when --migrate is used
 
+FETCH_ZONES=""  # output file for fetching zones from source
+
 LOG_LEVEL="INFO"
 DEBUG=false
 
@@ -143,6 +182,10 @@ while [[ $# -gt 0 ]]; do
       MIGRATE_RECREATE=true
       shift
       ;;
+    --fetch-zones)
+      FETCH_ZONES="${2:-}"
+      shift 2
+      ;;
     *)
       echo "Unknown option: $1" >&2
       exit 1
@@ -151,6 +194,12 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ---- existing actions ----
+
+# Fetch zones from source (standalone action)
+if [[ -n "$FETCH_ZONES" ]]; then
+  fetch_zones_from_source "$FETCH_ZONES"
+fi
+
 if [[ "$DELETE_TARGET_ZONES" == true ]]; then
   print_header "Removing existing zones on target"
 
@@ -192,6 +241,13 @@ if [[ "$MIGRATE" == true ]]; then
   if [[ -z "$ZONE" && -z "$ZONES_FILE" ]]; then
     echo "Error: --zone <name> or --zones-file <path> is required when using --migrate" >&2
     exit 1
+  fi
+
+  # Auto-fetch zones from source if zones file doesn't exist
+  if [[ -n "$ZONES_FILE" && ! -f "$ZONES_FILE" ]]; then
+    echo "Zones file not found: $ZONES_FILE"
+    echo "Fetching zones from source server to create it..."
+    fetch_zones_from_source "$ZONES_FILE"
   fi
 
   run_pdns_migrator "$ZONE" "$ZONES_FILE" "$MIGRATE_DRY_RUN" "$MIGRATE_RECREATE" "$MIGRATE_AUTOFIX"

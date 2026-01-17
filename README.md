@@ -29,7 +29,7 @@ powerdns-migrate \
   --target-url https://pdns-target:8081 \
   --target-key "$PDNS_TARGET_KEY" \
   --zones-file /path/to/zones.txt \
-  --concurrency 50
+  --concurrency 5
 ```
 
 Key flags:
@@ -82,6 +82,39 @@ async def run():
 
 asyncio.run(run())
 ```
+
+### PowerDNSConnection Arguments
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `base_url` | `str` | *required* | PowerDNS API base URL (e.g. `https://pdns:8081`) |
+| `api_key` | `str` | *required* | PowerDNS API key |
+| `server_id` | `str` | `"localhost"` | PowerDNS server id |
+| `verify_ssl` | `bool` | `True` | Verify TLS certificates |
+
+### AsyncZoneMigrator Arguments
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `source` | `PowerDNSConnection` | *required* | Source PowerDNS connection config |
+| `target` | `PowerDNSConnection` | *required* | Target PowerDNS connection config |
+| `timeout` | `float` | `10.0` | HTTP timeout in seconds |
+| `retries` | `int` | `3` | Retry count for transient API errors |
+| `retry_backoff` | `float` | `0.5` | Base backoff seconds between retries |
+| `retry_max_backoff` | `float` | `5.0` | Maximum backoff seconds between retries |
+| `retry_jitter` | `float` | `0.1` | Max random jitter seconds added to backoff |
+| `ignore_soa_serial` | `bool` | `False` | Ignore SOA serial changes and keep target serial |
+| `auto_fix_cname_conflicts` | `bool` | `False` | Auto-fix CNAME conflicts (drop other types on same name, but drop CNAME at apex) |
+| `auto_fix_double_cname_conflicts` | `bool` | `False` | Trim multi-record CNAME rrsets to single record (first one wins) |
+| `normalize_txt_escapes` | `bool` | `False` | Normalize TXT/SPF decimal escape sequences to raw bytes for comparison |
+
+### migrate() Arguments
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `zone_name` | `str` | *required* | Zone name to migrate (e.g. `"example.com."`) |
+| `recreate` | `bool` | `False` | Delete target zone before recreating if it exists |
+| `dry_run` | `bool` | `False` | Validate and compute changes without modifying target |
 
 ### Migration Result Structure
 

@@ -1,0 +1,2 @@
+powerdns-migrator
+aio-pika==9.5.8

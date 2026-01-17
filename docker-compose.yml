@@ -1,7 +1,7 @@
 services:
   mysql:
     image: mysql:8.0
-    container_name: pdns-mysql
+    container_name: mysql
     environment:
       MYSQL_ROOT_PASSWORD: rootpass
     ports:
@@ -10,7 +10,9 @@ services:
       - /var/lib/mysql
     volumes:
       # - pdns_mysql_data:/var/lib/mysql
-      - ./docker/mysql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./docker/mysql/init_pdns1.sql:/docker-entrypoint-initdb.d/init_pdns1.sql:ro
+      - ./docker/mysql/init_pdns2.sql:/docker-entrypoint-initdb.d/init_pdns2.sql:ro
+      # - ./docker/mysql/init_pdns1_full.sql:/docker-entrypoint-initdb.d/init_pdns1_full.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p$$MYSQL_ROOT_PASSWORD"]
       interval: 10s
@@ -38,10 +40,13 @@ services:
       PDNS_webserver_allow_from: 0.0.0.0/0
       PDNS_loglevel: 4
       PDNS_seed_zones: "true"
+      PDNS_seed_zones_amount: "50"
     ports:
       - "5001:53/tcp"
       - "5001:53/udp"
       - "8081:8081"
+    tmpfs:
+      - /tmp/zones
     volumes:
       - ./docker/zones:/zones:ro
     healthcheck:
@@ -82,6 +87,22 @@ services:
       interval: 10s
       timeout: 3s
       retries: 3
+      start_period: 30s
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: admin
+      RABBITMQ_DEFAULT_PASS: pass2login
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD-SHELL", "rabbitmqctl status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
       start_period: 30s
 
 # volumes:

@@ -4,7 +4,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-       ca-certificates curl gnupg tini vim \
+       bash ca-certificates curl gnupg tini vim \
     && install -d /etc/apt/keyrings \
     && curl -fsSL https://repo.powerdns.com/FD380FBB-pub.asc \
        | tee /etc/apt/keyrings/auth-50-pub.asc >/dev/null \

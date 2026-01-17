@@ -1,3 +1,0 @@
-zone1.test
-zone2.test
-zone3.test
