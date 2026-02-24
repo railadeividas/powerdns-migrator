@@ -1,60 +1,75 @@
 from __future__ import annotations
 
-from typing import Optional
 
+class PowerDNSMigratorError(Exception):
+    """Base exception for all powerdns-migrator errors.
 
-def format_exception_message(exc: Exception | None) -> str:
-    if exc is None:
-        return "unknown error"
-    return f"{exc.__class__.__name__}: {exc}"
-
-
-class PowerDNSAPIError(RuntimeError):
+    Catch this to handle any error originating from this package.
     """
-    Exception raised when a PowerDNS API request returns a non-successful response.
+
+
+class PowerDNSAPIError(PowerDNSMigratorError):
+    """The PowerDNS API responded with an HTTP 4xx/5xx status.
 
     Attributes:
-        method: HTTP method used for the request, if available.
-        url: Full request URL, if available.
-        status: HTTP status code returned by the API, if available.
-        error_reason: Error reason returned by migrator, if available.
-        error_message: Error message returned by the API, if available.
+        method: HTTP method of the failed request.
+        url: Full request URL.
+        status: HTTP status code returned by the API.
+        body: Raw response body returned by the API.
     """
 
     def __init__(
         self,
-        method: Optional[str] = None,
-        url: Optional[str] = None,
-        status: Optional[int] = None,
-        error_reason: Optional[str] = None,
-        error_message: Optional[str] = None,
+        *,
+        method: str,
+        url: str,
+        status: int,
+        body: str = "",
     ) -> None:
-        details = []
-
-        if method:
-            details.append(f"method={method}")
-
-        if url:
-            details.append(f"url={url}")
-
-        if status is not None:
-            details.append(f"status={status}")
-
-        if error_reason:
-            details.append(f"error_reason={error_reason}")
-
-        if error_message:
-            details.append(f"error_message={error_message}")
-
-        full_message = (
-            f"PowerDNS API call error: {', '.join(details)}"
-            if details
-            else "Unknown error"
-        )
-
-        super().__init__(full_message)
         self.method = method
         self.url = url
         self.status = status
-        self.error_reason = error_reason
-        self.error_message = error_message
+        self.body = body
+        super().__init__(
+            f"PowerDNS API error: {method} {url} returned {status}: {body}"
+        )
+
+
+class PowerDNSConnectionError(PowerDNSMigratorError):
+    """A network-level failure prevented the request from completing.
+
+    Raised after all retry attempts are exhausted due to connection errors,
+    timeouts, DNS resolution failures, or similar transport issues.
+
+    Attributes:
+        method: HTTP method of the failed request.
+        url: Full request URL.
+        cause: The underlying exception that triggered the failure.
+        retries_attempted: Number of retries performed before giving up.
+    """
+
+    def __init__(
+        self,
+        *,
+        method: str,
+        url: str,
+        cause: Exception | None = None,
+        retries_attempted: int = 0,
+    ) -> None:
+        self.method = method
+        self.url = url
+        self.cause = cause
+        self.retries_attempted = retries_attempted
+        cause_detail = f"{cause.__class__.__name__}: {cause}" if cause else "unknown"
+        super().__init__(
+            f"Connection failed: {method} {url} after "
+            f"{retries_attempted} retries: {cause_detail}"
+        )
+
+
+class MigratorConfigError(PowerDNSMigratorError):
+    """A configuration or validation error in the migrator.
+
+    Raised for problems like missing files, invalid argument values,
+    or other pre-flight validation failures.
+    """

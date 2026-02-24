@@ -11,7 +11,12 @@ from typing import Optional
 
 from .async_migrator import AsyncZoneMigrator
 from .config import PowerDNSConnection
-from .errors import PowerDNSAPIError
+from .errors import (
+    MigratorConfigError,
+    PowerDNSAPIError,
+    PowerDNSConnectionError,
+    PowerDNSMigratorError,
+)
 
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
@@ -187,8 +192,11 @@ async def _run_single(args: argparse.Namespace) -> int:
     )
     try:
         await migrator.migrate(args.zone, recreate=args.recreate, dry_run=args.dry_run)
+    except PowerDNSConnectionError as exc:
+        logging.error("Connection failed for zone %s: %s", args.zone, exc)
+        return 1
     except PowerDNSAPIError as exc:
-        logging.error("%s", exc)
+        logging.error("API error for zone %s: %s", args.zone, exc)
         return 1
     finally:
         try:
@@ -220,9 +228,8 @@ async def _run_batch(args: argparse.Namespace) -> int:
     )
     zones_path = Path(args.zones_file)
     if not zones_path.exists():
-        logging.error("Zones file not found: %s", zones_path)
         await asyncio.shield(migrator.close())
-        return 1
+        raise MigratorConfigError(f"Zones file not found: {zones_path}")
 
     success = 0
     failed = 0
@@ -247,7 +254,7 @@ async def _run_batch(args: argparse.Namespace) -> int:
                 )
                 async with counter_lock:
                     success += 1
-            except PowerDNSAPIError as exc:
+            except PowerDNSMigratorError as exc:
                 logging.error("Zone %s failed: %s", zone, exc)
                 async with counter_lock:
                     failed += 1
@@ -363,10 +370,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     stdout_handler = logging.StreamHandler(sys.stdout)
     stdout_handler.setLevel(level)
     stdout_handler.setFormatter(formatter)
-    stdout_handler.addFilter(lambda record: record.levelno < logging.CRITICAL)
+    stdout_handler.addFilter(lambda record: record.levelno < logging.ERROR)
 
     stderr_handler = logging.StreamHandler(sys.stderr)
-    stderr_handler.setLevel(logging.CRITICAL)
+    stderr_handler.setLevel(logging.ERROR)
     stderr_handler.setFormatter(formatter)
 
     logger.handlers.clear()
@@ -377,6 +384,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         if args.zones_file:
             return asyncio.run(_run_batch(args))
         return asyncio.run(_run_single(args))
+    except MigratorConfigError as exc:
+        logging.error("%s", exc)
+        return 2
     except KeyboardInterrupt:
         logging.warning("Interrupted by user.")
         return 130

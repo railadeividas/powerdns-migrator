@@ -38,6 +38,9 @@ include = ["powerdns_migrator*"]
 [tool.setuptools]
 include-package-data = true
 
+[tool.setuptools.package-data]
+powerdns_migrator = ["py.typed"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 markers = [

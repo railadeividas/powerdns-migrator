@@ -3,11 +3,19 @@
 from .async_client import AsyncPowerDNSClient
 from .async_migrator import AsyncZoneMigrator
 from .config import PowerDNSConnection
-from .errors import PowerDNSAPIError
+from .errors import (
+    MigratorConfigError,
+    PowerDNSAPIError,
+    PowerDNSConnectionError,
+    PowerDNSMigratorError,
+)
 
 __all__ = [
     "AsyncPowerDNSClient",
     "AsyncZoneMigrator",
-    "PowerDNSConnection",
+    "MigratorConfigError",
     "PowerDNSAPIError",
+    "PowerDNSConnection",
+    "PowerDNSConnectionError",
+    "PowerDNSMigratorError",
 ]

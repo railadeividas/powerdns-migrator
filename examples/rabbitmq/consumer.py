@@ -12,7 +12,7 @@ import aio_pika
 
 from powerdns_migrator.async_migrator import AsyncZoneMigrator
 from powerdns_migrator.config import PowerDNSConnection
-from powerdns_migrator.errors import PowerDNSAPIError
+from powerdns_migrator.errors import PowerDNSMigratorError
 
 # RabbitMQ configuration
 RABBIT_URL = os.getenv("RABBIT_URL", "amqp://admin:pass2login@localhost/")
@@ -112,7 +112,7 @@ async def handle_message(
                 result.get("migrator_action"),
                 len(result.get("changes", {})),
             )
-        except PowerDNSAPIError as exc:
+        except PowerDNSMigratorError as exc:
             logging.error("Zone %s failed: %s", zone, exc)
             raise  # requeue
 

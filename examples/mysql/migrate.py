@@ -12,7 +12,7 @@ import aiomysql
 
 from powerdns_migrator.async_migrator import AsyncZoneMigrator
 from powerdns_migrator.config import PowerDNSConnection
-from powerdns_migrator.errors import PowerDNSAPIError
+from powerdns_migrator.errors import PowerDNSMigratorError
 
 # MySQL configuration
 MYSQL_HOST = os.getenv("MYSQL_HOST", "localhost")
@@ -197,7 +197,7 @@ async def migrate_worker(
                     changes,
                 )
 
-        except PowerDNSAPIError as exc:
+        except PowerDNSMigratorError as exc:
             stats.failed += 1
             logging.error("Zone %s failed: %s", zone, exc)
             if ON_ERROR == "stop":

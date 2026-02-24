@@ -7,7 +7,7 @@ from typing import Any, Dict, cast
 
 import aiohttp
 
-from .errors import PowerDNSAPIError, format_exception_message
+from .errors import PowerDNSAPIError, PowerDNSConnectionError
 from .utils import normalize_zone_name
 from .config import PowerDNSConnection
 
@@ -74,8 +74,7 @@ class AsyncPowerDNSClient:
                             method=method,
                             url=url,
                             status=resp.status,
-                            error_reason="api error",
-                            error_message=body,
+                            body=body,
                         )
                     return cast(Dict[str, Any], await resp.json())
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
@@ -93,11 +92,11 @@ class AsyncPowerDNSClient:
                     exc,
                 )
                 await asyncio.sleep(delay)
-        raise PowerDNSAPIError(
+        raise PowerDNSConnectionError(
             method=method,
             url=url,
-            error_reason="failed after retries",
-            error_message=format_exception_message(last_error),
+            cause=last_error,
+            retries_attempted=self.retries,
         )
 
     async def _request_ok(self, method: str, path: str, **kwargs: Any) -> None:
@@ -128,8 +127,7 @@ class AsyncPowerDNSClient:
                             method=method,
                             url=url,
                             status=resp.status,
-                            error_reason="api error",
-                            error_message=body,
+                            body=body,
                         )
                     await resp.release()
                     return
@@ -142,11 +140,11 @@ class AsyncPowerDNSClient:
                     "Retrying %s %s in %.2fs after error: %s", method, url, delay, exc
                 )
                 await asyncio.sleep(delay)
-        raise PowerDNSAPIError(
+        raise PowerDNSConnectionError(
             method=method,
             url=url,
-            error_reason="failed after retries",
-            error_message=format_exception_message(last_error),
+            cause=last_error,
+            retries_attempted=self.retries,
         )
 
     async def get_zone(self, zone_name: str) -> Dict[str, Any]:
