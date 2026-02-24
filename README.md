@@ -23,7 +23,7 @@ pip install powerdns-migrator
 ## Usage
 
 ```bash
-powerdns-migrate \
+powerdns-migrator \
   --source-url https://pdns-source:8081 \
   --source-key "$PDNS_SOURCE_KEY" \
   --target-url https://pdns-target:8081 \
@@ -35,7 +35,7 @@ powerdns-migrate \
 Batch mode (async, parallel):
 
 ```bash
-powerdns-migrate \
+powerdns-migrator \
   --source-url https://pdns-source:8081 \
   --source-key "$PDNS_SOURCE_KEY" \
   --target-url https://pdns-target:8081 \
@@ -73,6 +73,7 @@ import asyncio
 
 from powerdns_migrator.async_migrator import AsyncZoneMigrator
 from powerdns_migrator.config import PowerDNSConnection
+from powerdns_migrator.errors import PowerDNSAPIError, PowerDNSConnectionError, PowerDNSMigratorError
 
 source = PowerDNSConnection(
     base_url="https://pdns-source:8081",
@@ -89,6 +90,12 @@ async def run():
         result = await migrator.migrate("example.com.", recreate=True, dry_run=False)
         print(f"Migration completed: {result['migrator_action']}")
         print(f"Changes applied: {len(result['changes'])}")
+    except PowerDNSAPIError as exc:
+        print(f"API error: {exc.status} {exc.body}")
+    except PowerDNSConnectionError as exc:
+        print(f"Connection error: {exc.cause}")
+    except PowerDNSMigratorError as exc:
+        print(f"Migration error: {exc}")
     finally:
         await migrator.close()
 
@@ -163,29 +170,9 @@ The `--dry-run` flag allows you to test migrations safely without making any cha
 - ❌ **Does NOT** create, delete, or modify zones on target server
 - ❌ **Does NOT** make any API calls to target server (except zone existence checks)
 
-### Example output:
-```bash
-# Test single zone migration
-powerdns-migrate \
-  --source-url https://pdns-source:8081 \
-  --source-key "$PDNS_SOURCE_KEY" \
-  --target-url https://pdns-target:8081 \
-  --target-key "$PDNS_TARGET_KEY" \
-  --zone example.com. \
-  --dry-run
+## Examples
 
-# Test batch migration
-powerdns-migrate \
-  --source-url https://pdns-source:8081 \
-  --source-key "$PDNS_SOURCE_KEY" \
-  --target-url https://pdns-target:8081 \
-  --target-key "$PDNS_TARGET_KEY" \
-  --zones-file /path/to/zones.txt \
-  --concurrency 10 \
-  --dry-run
-```
-
-The migrator will report what actions would be taken (`CREATE_ZONE`, `PATCH_ZONE`, `RECREATE_ZONE`, or `NOOP`) and provide detailed change information for each zone.
+The repository includes ready-to-use examples for common integration patterns in the [`examples/`](examples/) directory.
 
 ## Notes
 
