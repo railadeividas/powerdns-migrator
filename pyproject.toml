@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "powerdns-migrator"
-version = "0.1.0"
+version = "0.2.0"
 description = "CLI tool and library to migrate PowerDNS zones between servers"
 readme = "README.md"
 requires-python = ">=3.10"
