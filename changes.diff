@@ -1,0 +1,1538 @@
+diff --git a/docker-compose.yml b/docker-compose.yml
+index ea96ff3..c6fc372 100644
+--- a/docker-compose.yml
++++ b/docker-compose.yml
+@@ -20,6 +20,17 @@ services:
+       retries: 5
+       start_period: 30s
+ 
++  adminer:
++    image: adminer:4
++    container_name: adminer
++    depends_on:
++      mysql:
++        condition: service_healthy
++    ports:
++      - "8090:8080"
++    environment:
++      ADMINER_DEFAULT_SERVER: mysql
++
+   pdns_auth_1:
+     build:
+       context: ./docker/pdns
+@@ -105,5 +116,23 @@ services:
+       retries: 5
+       start_period: 30s
+ 
++  webui:
++    build:
++      context: .
++      dockerfile: docker/webui/Dockerfile
++    container_name: webui
++    environment:
++      WATCHFILES_FORCE_POLLING: "true"
++      PYTHONDONTWRITEBYTECODE: "1"
++      SOURCE_URL: "http://pdns-auth-1:8081"
++      SOURCE_KEY: "pdns1key"
++      TARGET_URL: "http://pdns-auth-2:8081"
++      TARGET_KEY: "pdns2key"
++    ports:
++      - "8080:8080"
++    volumes:
++      - ./docker/webui:/app
++      - ./powerdns_migrator:/pkg/powerdns_migrator
++
+ # volumes:
+ #   pdns_mysql_data:
+diff --git a/docker/webui/Dockerfile b/docker/webui/Dockerfile
+new file mode 100644
+index 0000000..e952f39
+--- /dev/null
++++ b/docker/webui/Dockerfile
+@@ -0,0 +1,18 @@
++FROM python:3.12-slim
++WORKDIR /app
++
++# Layer 1: webui deps (changes rarely)
++COPY docker/webui/requirements.txt /app/requirements.txt
++RUN pip install --no-cache-dir -r requirements.txt
++
++# Layer 2: library source — editable install so volume-mounted source is used directly
++COPY pyproject.toml /pkg/pyproject.toml
++COPY powerdns_migrator/ /pkg/powerdns_migrator/
++RUN pip install --no-cache-dir -e /pkg
++
++# Layer 3: app (changes often)
++COPY docker/webui/app.py /app/app.py
++
++EXPOSE 8080
++# --reload watches /app (app.py) and /pkg (powerdns_migrator source) for changes
++CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080", "--reload", "--reload-dir", "/app", "--reload-dir", "/pkg"]
+diff --git a/docker/webui/app.py b/docker/webui/app.py
+new file mode 100644
+index 0000000..a738080
+--- /dev/null
++++ b/docker/webui/app.py
+@@ -0,0 +1,501 @@
++from __future__ import annotations
++
++import asyncio
++import json
++import os
++import shlex
++import tempfile
++from pathlib import Path
++from typing import Any, AsyncIterator, Dict, List, Optional
++
++from fastapi import FastAPI, Request
++from fastapi.responses import HTMLResponse, StreamingResponse
++from fastapi.templating import Jinja2Templates
++from pydantic import BaseModel
++
++from powerdns_migrator import (
++    AsyncPowerDNSClient,
++    AsyncZoneMigrator,
++    PowerDNSConnection,
++    PowerDNSAPIError,
++    PowerDNSConnectionError,
++)
++
++# ---------------------------------------------------------------------------
++# Defaults from environment (populated by docker-compose)
++# ---------------------------------------------------------------------------
++
++_SOURCE_URL = os.environ.get("SOURCE_URL", "http://pdns-auth-1:8081")
++_SOURCE_KEY = os.environ.get("SOURCE_KEY", "pdns1key")
++_TARGET_URL = os.environ.get("TARGET_URL", "http://pdns-auth-2:8081")
++_TARGET_KEY = os.environ.get("TARGET_KEY", "pdns2key")
++
++# ---------------------------------------------------------------------------
++# Pydantic models
++# ---------------------------------------------------------------------------
++
++
++class ConnectionConfig(BaseModel):
++    source_url: str = _SOURCE_URL
++    source_key: str = _SOURCE_KEY
++    source_server_id: str = "localhost"
++    target_url: str = _TARGET_URL
++    target_key: str = _TARGET_KEY
++    target_server_id: str = "localhost"
++    verify_ssl: bool = False  # False by default for local docker dev
++
++
++class ZoneRequest(BaseModel):
++    zone_name: str = ""
++    server: str = "source"  # "source" | "target"
++    config: ConnectionConfig = ConnectionConfig()
++
++
++class ListZonesRequest(BaseModel):
++    server: str = "source"  # "source" | "target"
++    config: ConnectionConfig = ConnectionConfig()
++
++
++class MigrateRequest(BaseModel):
++    zone_name: str
++    recreate: bool = False
++    dry_run: bool = False
++    ignore_soa_serial: bool = False
++    auto_fix_cname_conflicts: bool = False
++    normalize_txt_escapes: bool = False
++    timeout: float = 10.0
++    retries: int = 3
++    retry_backoff: float = 0.5
++    retry_max_backoff: float = 5.0
++    retry_jitter: float = 0.1
++    config: ConnectionConfig = ConnectionConfig()
++
++
++class CreateZoneRequest(BaseModel):
++    zone_payload: Dict[str, Any]
++    server: str = "target"
++    config: ConnectionConfig = ConnectionConfig()
++
++
++class PatchZoneRrsetsRequest(BaseModel):
++    zone_name: str
++    rrsets: List[Dict[str, Any]]
++    server: str = "target"
++    config: ConnectionConfig = ConnectionConfig()
++
++
++class CLIRunRequest(BaseModel):
++    zone: str = ""
++    zones: str = ""  # newline-separated zone names (batch mode)
++    dry_run: bool = False
++    recreate: bool = False
++    ignore_soa_serial: bool = False
++    auto_fix_cname_conflicts: bool = False
++    auto_fix_double_cname_conflicts: bool = False
++    normalize_txt_escapes: bool = False
++    on_error: str = "continue"  # "continue" | "stop"
++    concurrency: int = 10
++    log_level: str = "INFO"
++    timeout: float = 10.0
++    retries: int = 3
++    retry_backoff: float = 0.5
++    retry_max_backoff: float = 5.0
++    retry_jitter: float = 0.1
++    progress_interval: float = 30.0
++    graceful_timeout: float = 0.0
++    config: ConnectionConfig = ConnectionConfig()
++
++
++# ---------------------------------------------------------------------------
++# Helper
++# ---------------------------------------------------------------------------
++
++
++def _conn(cfg: ConnectionConfig, side: str) -> PowerDNSConnection:
++    if side == "source":
++        return PowerDNSConnection(
++            base_url=cfg.source_url,
++            api_key=cfg.source_key,
++            server_id=cfg.source_server_id,
++            verify_ssl=cfg.verify_ssl,
++        )
++    return PowerDNSConnection(
++        base_url=cfg.target_url,
++        api_key=cfg.target_key,
++        server_id=cfg.target_server_id,
++        verify_ssl=cfg.verify_ssl,
++    )
++
++
++def _err(exc: Exception) -> Dict[str, Any]:
++    if isinstance(exc, PowerDNSAPIError):
++        return {
++            "error": "PowerDNSAPIError",
++            "method": exc.method,
++            "url": exc.url,
++            "status": exc.status,
++            "body": exc.body,
++        }
++    if isinstance(exc, PowerDNSConnectionError):
++        return {
++            "error": "PowerDNSConnectionError",
++            "method": exc.method,
++            "url": exc.url,
++            "cause": f"{exc.cause.__class__.__name__}: {exc.cause}"
++            if exc.cause
++            else None,
++            "retries_attempted": exc.retries_attempted,
++        }
++    return {"error": type(exc).__name__, "message": str(exc)}
++
++
++# ---------------------------------------------------------------------------
++# App
++# ---------------------------------------------------------------------------
++
++app = FastAPI(title="PowerDNS Migrator Dev UI", version="0.1.0")
++templates = Jinja2Templates(directory=Path(__file__).parent)
++
++
++# ---------------------------------------------------------------------------
++# API endpoints
++# ---------------------------------------------------------------------------
++
++
++@app.get("/api/health")
++async def health() -> Dict[str, str]:
++    return {"status": "ok"}
++
++
++@app.post("/api/get-zone")
++async def api_get_zone(req: ZoneRequest) -> Dict[str, Any]:
++    client = AsyncPowerDNSClient(_conn(req.config, req.server))
++    try:
++        data = await client.get_zone(req.zone_name)
++        return data
++    except (PowerDNSAPIError, PowerDNSConnectionError) as exc:
++        return _err(exc)
++    finally:
++        await client.close()
++
++
++@app.post("/api/zone-exists")
++async def api_zone_exists(req: ZoneRequest) -> Any:
++    client = AsyncPowerDNSClient(_conn(req.config, req.server))
++    try:
++        return await client.zone_exists(req.zone_name)
++    except (PowerDNSAPIError, PowerDNSConnectionError) as exc:
++        return _err(exc)
++    finally:
++        await client.close()
++
++
++@app.post("/api/list-zones")
++async def api_list_zones(req: ListZonesRequest) -> Any:
++    client = AsyncPowerDNSClient(_conn(req.config, req.server))
++    try:
++        return await client.list_zones()
++    except (PowerDNSAPIError, PowerDNSConnectionError) as exc:
++        return _err(exc)
++    finally:
++        await client.close()
++
++
++@app.post("/api/migrate")
++async def api_migrate(req: MigrateRequest) -> Dict[str, Any]:
++    migrator = AsyncZoneMigrator(
++        source=_conn(req.config, "source"),
++        target=_conn(req.config, "target"),
++        timeout=req.timeout,
++        retries=req.retries,
++        retry_backoff=req.retry_backoff,
++        retry_max_backoff=req.retry_max_backoff,
++        retry_jitter=req.retry_jitter,
++        ignore_soa_serial=req.ignore_soa_serial,
++        auto_fix_cname_conflicts=req.auto_fix_cname_conflicts,
++        normalize_txt_escapes=req.normalize_txt_escapes,
++    )
++    try:
++        result = await migrator.migrate(
++            req.zone_name,
++            recreate=req.recreate,
++            dry_run=req.dry_run,
++        )
++        return result
++    except (PowerDNSAPIError, PowerDNSConnectionError, Exception) as exc:
++        return _err(exc)
++    finally:
++        await migrator.close()
++
++
++@app.post("/api/delete-zone")
++async def api_delete_zone(req: ZoneRequest) -> Dict[str, Any]:
++    client = AsyncPowerDNSClient(_conn(req.config, req.server))
++    try:
++        await client.delete_zone(req.zone_name)
++        return {"deleted": req.zone_name}
++    except (PowerDNSAPIError, PowerDNSConnectionError) as exc:
++        return _err(exc)
++    finally:
++        await client.close()
++
++
++@app.post("/api/create-zone")
++async def api_create_zone(req: CreateZoneRequest) -> Dict[str, Any]:
++    client = AsyncPowerDNSClient(_conn(req.config, req.server))
++    try:
++        data = await client.create_zone(req.zone_payload)
++        return data
++    except (PowerDNSAPIError, PowerDNSConnectionError) as exc:
++        return _err(exc)
++    finally:
++        await client.close()
++
++
++@app.post("/api/patch-zone-rrsets")
++async def api_patch_zone_rrsets(req: PatchZoneRrsetsRequest) -> Dict[str, Any]:
++    client = AsyncPowerDNSClient(_conn(req.config, req.server))
++    try:
++        await client.patch_zone_rrsets(req.zone_name, req.rrsets)
++        return {"patched": req.zone_name, "rrsets_count": len(req.rrsets)}
++    except (PowerDNSAPIError, PowerDNSConnectionError) as exc:
++        return _err(exc)
++    finally:
++        await client.close()
++
++
++@app.post("/api/cli-run")
++async def api_cli_run(req: CLIRunRequest) -> Dict[str, Any]:
++    cfg = req.config
++    args = [
++        "python",
++        "-m",
++        "powerdns_migrator",
++        "--source-url",
++        cfg.source_url,
++        "--source-key",
++        cfg.source_key,
++        "--source-server-id",
++        cfg.source_server_id,
++        "--target-url",
++        cfg.target_url,
++        "--target-key",
++        cfg.target_key,
++        "--target-server-id",
++        cfg.target_server_id,
++        "--timeout",
++        str(req.timeout),
++        "--retries",
++        str(req.retries),
++        "--retry-backoff",
++        str(req.retry_backoff),
++        "--retry-max-backoff",
++        str(req.retry_max_backoff),
++        "--retry-jitter",
++        str(req.retry_jitter),
++        "--progress-interval",
++        str(req.progress_interval),
++        "--on-error",
++        req.on_error,
++        "--concurrency",
++        str(req.concurrency),
++        "--log-level",
++        req.log_level,
++    ]
++    if req.dry_run:
++        args.append("--dry-run")
++    if req.recreate:
++        args.append("--recreate")
++    if req.ignore_soa_serial:
++        args.append("--ignore-soa-serial")
++    if req.auto_fix_cname_conflicts:
++        args.append("--auto-fix-cname-conflicts")
++    if req.auto_fix_double_cname_conflicts:
++        args.append("--auto-fix-double-cname-conflicts")
++    if req.normalize_txt_escapes:
++        args.append("--normalize-txt-escapes")
++    if req.graceful_timeout > 0:
++        args.extend(["--graceful-timeout", str(req.graceful_timeout)])
++
++    tmp_path: Optional[str] = None
++    try:
++        if req.zone:
++            args.extend(["--zone", req.zone])
++        elif req.zones:
++            with tempfile.NamedTemporaryFile(
++                mode="w", suffix=".txt", delete=False
++            ) as f:
++                f.write(req.zones.strip() + "\n")
++                tmp_path = f.name
++            args.extend(["--zones-file", tmp_path])
++        else:
++            return {
++                "error": "ValueError",
++                "message": "Provide a zone name or batch zones",
++            }
++
++        proc = await asyncio.create_subprocess_exec(
++            *args,
++            stdout=asyncio.subprocess.PIPE,
++            stderr=asyncio.subprocess.PIPE,
++        )
++        try:
++            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
++        except asyncio.TimeoutError:
++            proc.kill()
++            return {"error": "TimeoutError", "message": "CLI timed out after 300 s"}
++
++        # Mask API keys in the displayed command
++        display_args = [
++            "****" if (i > 0 and args[i - 1] in ("--source-key", "--target-key")) else a
++            for i, a in enumerate(args)
++        ]
++        return {
++            "returncode": proc.returncode,
++            "stdout": stdout.decode(errors="replace"),
++            "stderr": stderr.decode(errors="replace"),
++            "command": shlex.join(display_args),
++        }
++    finally:
++        if tmp_path:
++            os.unlink(tmp_path)
++
++
++@app.post("/api/cli-run-stream")
++async def api_cli_run_stream(req: CLIRunRequest) -> StreamingResponse:
++    cfg = req.config
++    args = [
++        "python",
++        "-m",
++        "powerdns_migrator",
++        "--source-url",
++        cfg.source_url,
++        "--source-key",
++        cfg.source_key,
++        "--source-server-id",
++        cfg.source_server_id,
++        "--target-url",
++        cfg.target_url,
++        "--target-key",
++        cfg.target_key,
++        "--target-server-id",
++        cfg.target_server_id,
++        "--timeout",
++        str(req.timeout),
++        "--retries",
++        str(req.retries),
++        "--retry-backoff",
++        str(req.retry_backoff),
++        "--retry-max-backoff",
++        str(req.retry_max_backoff),
++        "--retry-jitter",
++        str(req.retry_jitter),
++        "--progress-interval",
++        str(req.progress_interval),
++        "--on-error",
++        req.on_error,
++        "--concurrency",
++        str(req.concurrency),
++        "--log-level",
++        req.log_level,
++    ]
++    if req.dry_run:
++        args.append("--dry-run")
++    if req.recreate:
++        args.append("--recreate")
++    if req.ignore_soa_serial:
++        args.append("--ignore-soa-serial")
++    if req.auto_fix_cname_conflicts:
++        args.append("--auto-fix-cname-conflicts")
++    if req.auto_fix_double_cname_conflicts:
++        args.append("--auto-fix-double-cname-conflicts")
++    if req.normalize_txt_escapes:
++        args.append("--normalize-txt-escapes")
++    if req.graceful_timeout > 0:
++        args.extend(["--graceful-timeout", str(req.graceful_timeout)])
++
++    display_args = [
++        "****" if (i > 0 and args[i - 1] in ("--source-key", "--target-key")) else a
++        for i, a in enumerate(args)
++    ]
++
++    tmp_path: Optional[str] = None
++    if req.zone:
++        args.extend(["--zone", req.zone])
++    elif req.zones:
++        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
++            f.write(req.zones.strip() + "\n")
++            tmp_path = f.name
++        args.extend(["--zones-file", tmp_path])
++    else:
++
++        async def _err_gen() -> AsyncIterator[str]:
++            yield (
++                json.dumps(
++                    {
++                        "type": "error",
++                        "error": "ValueError",
++                        "message": "Provide a zone name or batch zones",
++                    }
++                )
++                + "\n"
++            )
++
++        return StreamingResponse(_err_gen(), media_type="application/x-ndjson")
++
++    async def generate() -> AsyncIterator[str]:
++        try:
++            yield (
++                json.dumps({"type": "command", "text": shlex.join(display_args)}) + "\n"
++            )
++
++            proc = await asyncio.create_subprocess_exec(
++                *args,
++                stdout=asyncio.subprocess.PIPE,
++                stderr=asyncio.subprocess.PIPE,
++            )
++
++            q: asyncio.Queue = asyncio.Queue()
++
++            async def pump(stream: asyncio.StreamReader, name: str) -> None:
++                async for line in stream:
++                    await q.put((name, line.decode(errors="replace")))
++                await q.put((name, None))
++
++            asyncio.create_task(pump(proc.stdout, "stdout"))
++            asyncio.create_task(pump(proc.stderr, "stderr"))
++
++            done = 0
++            while done < 2:
++                name, text = await q.get()
++                if text is None:
++                    done += 1
++                    continue
++                yield json.dumps({"type": name, "text": text}) + "\n"
++
++            await proc.wait()
++            yield json.dumps({"type": "done", "returncode": proc.returncode}) + "\n"
++        finally:
++            if tmp_path:
++                os.unlink(tmp_path)
++
++    return StreamingResponse(generate(), media_type="application/x-ndjson")
++
++
++# ---------------------------------------------------------------------------
++# HTML UI
++# ---------------------------------------------------------------------------
++
++
++@app.get("/", response_class=HTMLResponse)
++async def ui(request: Request) -> HTMLResponse:
++    return templates.TemplateResponse(
++        request,
++        "index.html",
++        {
++            "source_url": _SOURCE_URL,
++            "source_key": _SOURCE_KEY,
++            "target_url": _TARGET_URL,
++            "target_key": _TARGET_KEY,
++        },
++    )
+diff --git a/docker/webui/index.html b/docker/webui/index.html
+new file mode 100644
+index 0000000..ab5c5ee
+--- /dev/null
++++ b/docker/webui/index.html
+@@ -0,0 +1,881 @@
++<!DOCTYPE html>
++<html lang="en">
++<head>
++  <meta charset="utf-8">
++  <meta name="viewport" content="width=device-width, initial-scale=1">
++  <title>PowerDNS Migrator Dev UI</title>
++  <style>
++    *, *::before, *::after { box-sizing: border-box; }
++
++    html, body { height: 100%; margin: 0; }
++
++    body {
++      font-family: system-ui, sans-serif;
++      background: #f0f2f5;
++      color: #222;
++      display: flex;
++      flex-direction: column;
++      padding: 1.25rem 1.75rem;
++      max-width: 1680px;
++      margin: 0 auto;
++      min-height: 100vh;
++    }
++
++    /* ── Header ── */
++    .app-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.25rem; }
++    h1 { margin: 0; font-size: 1.35rem; }
++    h2 { font-size: 0.95rem; margin: 0 0 1rem; color: #555; font-weight: 600; }
++
++    /* ── Service nav ── */
++    .service-nav { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; }
++    .service-nav a {
++      display: inline-flex; align-items: center; gap: 0.35rem;
++      padding: 0.3rem 0.75rem;
++      border: 1px solid #ddd; border-radius: 20px;
++      font-size: 0.78rem; font-weight: 500;
++      text-decoration: none; color: #555;
++      background: #fff;
++      transition: background 0.12s, border-color 0.12s, color 0.12s;
++    }
++    .service-nav a:hover { background: #f0f4ff; border-color: #93c5fd; color: #1e40af; }
++    .service-nav a .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
++    .service-nav a[data-svc="adminer"]  .dot { background: #f59e0b; }
++    .service-nav a[data-svc="pdns1"]    .dot { background: #3b82f6; }
++    .service-nav a[data-svc="pdns2"]    .dot { background: #6366f1; }
++    .service-nav a[data-svc="rabbitmq"] .dot { background: #f97316; }
++
++    /* ── Two-column layout ── */
++    .app-body {
++      display: flex;
++      flex: 1;
++      min-height: 0;
++      align-items: start;
++    }
++
++    /* ── Left panel (output) ── */
++    .left-panel {
++      width: 55%;
++      min-width: 220px;
++      flex-shrink: 0;
++      position: sticky;
++      top: 1.25rem;
++      height: calc(100vh - 5.5rem);
++      display: flex;
++      flex-direction: column;
++    }
++
++    /* ── Resize handle ── */
++    .resize-handle {
++      width: 12px;
++      flex-shrink: 0;
++      cursor: col-resize;
++      position: relative;
++      align-self: stretch;
++    }
++    .resize-handle::after {
++      content: '';
++      position: absolute;
++      top: 0; bottom: 0;
++      left: 50%;
++      transform: translateX(-50%);
++      width: 3px;
++      border-radius: 2px;
++      background: #e0e0e0;
++      transition: background 0.15s;
++    }
++    .resize-handle:hover::after,
++    .resize-handle.dragging::after { background: #2563eb; }
++
++    /* ── Config card ── */
++    .config-card {
++      background: #fff;
++      border: 1px solid #ddd;
++      border-radius: 8px;
++      padding: 1rem 1.25rem;
++    }
++    .section-label {
++      font-size: 0.72rem;
++      font-weight: 700;
++      text-transform: uppercase;
++      letter-spacing: 0.06em;
++      color: #888;
++      margin: 0 0 0.75rem;
++    }
++    .config-header {
++      display: flex; align-items: center; justify-content: space-between;
++      cursor: pointer; user-select: none;
++    }
++    .config-header .section-label { margin: 0; }
++    .config-toggle {
++      font-size: 0.75rem; color: #888; transition: transform 0.2s; flex-shrink: 0;
++    }
++    .config-card.collapsed .config-toggle { transform: rotate(-90deg); }
++    .config-card.collapsed .config-grid   { display: none; }
++
++    .config-grid {
++      display: grid;
++      grid-template-columns: 1fr 1fr;
++      gap: 0.6rem 1.25rem;
++      margin-top: 0.75rem;
++    }
++    .config-grid label {
++      display: flex;
++      flex-direction: column;
++      font-size: 0.8rem;
++      gap: 0.25rem;
++      color: #666;
++    }
++
++    /* ── Inputs ── */
++    input[type=text], input[type=number], textarea {
++      padding: 0.4rem 0.6rem;
++      border: 1px solid #d0d0d0;
++      border-radius: 5px;
++      font-size: 0.88rem;
++      width: 100%;
++      background: #fafafa;
++      color: #222;
++      transition: border-color 0.15s, box-shadow 0.15s;
++    }
++    input[type=text]:focus, input[type=number]:focus, textarea:focus {
++      outline: none;
++      border-color: #2563eb;
++      box-shadow: 0 0 0 3px rgba(37,99,235,0.12);
++      background: #fff;
++    }
++    textarea.json-input {
++      min-height: 280px;
++      resize: vertical;
++      font-family: 'Cascadia Code', 'Fira Code', Consolas, monospace;
++      font-size: 0.82rem;
++    }
++    select {
++      padding: 0.4rem 0.6rem;
++      border: 1px solid #d0d0d0;
++      border-radius: 5px;
++      font-size: 0.88rem;
++      background: #fafafa;
++      color: #222;
++    }
++
++    /* ── Tabs ── */
++    .tabs-wrapper { display: flex; flex-direction: column; }
++    .tabs { display: flex; gap: 0.25rem; }
++    .tab-btn {
++      padding: 0.45rem 1.05rem;
++      border: 1px solid #ddd;
++      border-bottom: none;
++      background: #e8e8e8;
++      border-radius: 6px 6px 0 0;
++      cursor: pointer;
++      font-size: 0.875rem;
++      color: #666;
++      transition: background 0.12s;
++    }
++    .tab-btn:hover:not(.active) { background: #ddd; color: #444; }
++    .tab-btn.active { background: #fff; font-weight: 600; color: #222; }
++    .tab-panel {
++      display: none;
++      background: #fff;
++      border: 1px solid #ddd;
++      border-radius: 0 6px 6px 6px;
++      padding: 1.25rem;
++    }
++    .tab-panel.active { display: block; }
++
++    /* ── Form rows ── */
++    .row { display: flex; gap: 0.5rem; align-items: flex-end; flex-wrap: wrap; margin-bottom: 1rem; }
++    .row label {
++      display: flex; flex-direction: column;
++      font-size: 0.8rem; gap: 0.25rem;
++      flex: 1; min-width: 200px; color: #666;
++    }
++
++    .checkbox-row { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem; }
++    .checkbox-row label {
++      display: flex; align-items: center; gap: 0.4rem;
++      font-size: 0.83rem; cursor: pointer;
++      padding: 0.3rem 0.7rem;
++      border: 1px solid #e0e0e0;
++      border-radius: 20px;
++      background: #f7f7f7;
++      color: #555;
++      user-select: none;
++      transition: background 0.12s, border-color 0.12s, color 0.12s;
++    }
++    .checkbox-row label:has(input:checked) {
++      background: #eff6ff;
++      border-color: #93c5fd;
++      color: #1e40af;
++    }
++    .checkbox-row input[type=checkbox] { accent-color: #2563eb; }
++
++    /* ── Buttons ── */
++    .btn-row { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.6rem; }
++    button {
++      padding: 0.45rem 1rem;
++      border: 1px solid #c0c0c0;
++      border-radius: 5px;
++      background: #f5f5f5;
++      cursor: pointer;
++      font-size: 0.875rem;
++      white-space: nowrap;
++      transition: background 0.12s, border-color 0.12s;
++    }
++    button:hover:not(:disabled) { background: #e8e8e8; border-color: #aaa; }
++    button:disabled { opacity: 0.45; cursor: not-allowed; }
++    button.danger { border-color: #fca5a5; color: #b91c1c; background: #fff5f5; }
++    button.danger:hover:not(:disabled) { background: #fee2e2; border-color: #f87171; }
++    button.primary { background: #2563eb; color: #fff; border-color: #1d4ed8; }
++    button.primary:hover:not(:disabled) { background: #1d4ed8; }
++
++    /* ── Right panel (controls) ── */
++    .right-panel {
++      flex: 1;
++      min-width: 470px;
++      display: flex;
++      flex-direction: column;
++      gap: 1rem;
++    }
++
++    .result-wrapper {
++      background: #fff;
++      border: 1px solid #ddd;
++      border-radius: 8px;
++      padding: 1rem 1.25rem;
++      display: flex;
++      flex-direction: column;
++      flex: 1;
++      min-height: 0;
++    }
++
++    .result-topbar {
++      display: flex;
++      align-items: center;
++      justify-content: space-between;
++      margin-bottom: 0.6rem;
++      flex-shrink: 0;
++    }
++    #result-header { font-size: 0.85rem; font-weight: 600; }
++    #result-header.ok { color: #166534; }
++    #result-header.err { color: #991b1b; }
++
++    #result-box {
++      flex: 1;
++      min-height: 0;
++      background: #1a1b26;
++      color: #c0caf5;
++      padding: 0.85rem 1rem;
++      overflow-y: auto;
++      white-space: pre;
++      font-family: 'Cascadia Code', 'Fira Code', Consolas, monospace;
++      font-size: 0.8rem;
++      border-radius: 6px;
++      border-left: 4px solid #414868;
++    }
++    #result-box.ok  { border-left-color: #9ece6a; }
++    #result-box.err { border-left-color: #f7768e; }
++
++    .copy-btn { margin-top: 0.6rem; align-self: flex-start; flex-shrink: 0; }
++
++    /* ── Template pills ── */
++    .template-row {
++      display: flex; align-items: center; gap: 0.35rem;
++      flex-wrap: wrap; margin-bottom: 0.5rem;
++    }
++    .template-label { font-size: 0.75rem; color: #888; white-space: nowrap; }
++    .template-row button {
++      padding: 0.2rem 0.6rem; font-size: 0.78rem;
++      border-radius: 20px; background: #f0f4ff;
++      border-color: #c7d7f8; color: #2563eb;
++    }
++    .template-row button:hover:not(:disabled) { background: #dbeafe; border-color: #93c5fd; }
++
++    /* ── Batch table ── */
++    .batch-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; white-space: normal; }
++    .batch-table th, .batch-table td { border: 1px solid #2d3561; padding: 0.35rem 0.6rem; text-align: left; }
++    .batch-table th { background: #24283b; color: #a9b1d6; }
++    .batch-table tr.ok td  { background: #1a2e1a; color: #9ece6a; }
++    .batch-table tr.err td { background: #2e1a1a; color: #f7768e; }
++  </style>
++</head>
++<body>
++
++<div class="app-header">
++  <h1>PowerDNS Migrator Dev UI</h1>
++  <nav class="service-nav">
++    <a href="http://localhost:15672" target="_blank" rel="noopener" data-svc="rabbitmq"><span class="dot"></span>RabbitMQ</a>
++    <a href="http://localhost:8090/?server=mysql&username=root" target="_blank" rel="noopener" data-svc="adminer"><span class="dot"></span>Adminer</a>
++    <a href="http://localhost:8081" target="_blank" rel="noopener" data-svc="pdns1"><span class="dot"></span>pdns_auth_1</a>
++    <a href="http://localhost:8082" target="_blank" rel="noopener" data-svc="pdns2"><span class="dot"></span>pdns_auth_2</a>
++  </nav>
++</div>
++
++<div class="app-body">
++
++  <!-- LEFT: results -->
++  <div class="left-panel">
++    <div class="result-wrapper">
++      <div class="result-topbar">
++        <span class="section-label" style="margin:0">Output</span>
++        <div style="display:flex;align-items:center;gap:0.75rem">
++          <label style="display:flex;align-items:center;gap:0.3rem;font-size:0.75rem;color:#888;cursor:pointer;user-select:none">
++            <input type="checkbox" id="wrap-toggle" onchange="toggleWrap(this)" style="accent-color:#2563eb"> wrap
++          </label>
++          <div id="result-header"></div>
++        </div>
++      </div>
++      <div id="result-box">Results will appear here…</div>
++    </div>
++  </div>
++
++  <div class="resize-handle" id="resize-handle"></div>
++
++  <!-- RIGHT: controls -->
++  <div class="right-panel">
++
++    <!-- Configuration -->
++    <div class="config-card">
++      <div class="config-header" onclick="toggleConfig()">
++        <p class="section-label">Connection Configuration</p>
++        <span class="config-toggle">▼</span>
++      </div>
++      <div class="config-grid">
++        <label>Source URL<input id="source_url" type="text" value="{{ source_url }}"></label>
++        <label>Target URL<input id="target_url" type="text" value="{{ target_url }}"></label>
++        <label>Source API Key<input id="source_key" type="text" value="{{ source_key }}"></label>
++        <label>Target API Key<input id="target_key" type="text" value="{{ target_key }}"></label>
++        <label>Source Server ID<input id="source_server_id" type="text" value="localhost"></label>
++        <label>Target Server ID<input id="target_server_id" type="text" value="localhost"></label>
++        <div class="btn-row" style="grid-column:1/-1;margin-top:0.4rem;margin-bottom:0">
++          <button onclick="swapConfig()" title="Swap source and target"> Swap source ⇄ target</button>
++        </div>
++      </div>
++    </div>
++
++    <!-- Tabs -->
++    <div class="tabs-wrapper">
++      <div class="tabs">
++        <button class="tab-btn active" onclick="switchTab('migrate')">ZoneMigrator</button>
++        <button class="tab-btn" onclick="switchTab('functions')">Functions</button>
++        <button class="tab-btn" onclick="switchTab('create')">Create</button>
++        <button class="tab-btn" onclick="switchTab('patch')">Patch</button>
++        <button class="tab-btn" onclick="switchTab('cli')">CLI</button>
++      </div>
++
++      <!-- ZoneMigrator -->
++      <div id="tab-migrate" class="tab-panel active">
++        <div class="row">
++          <label>Zone name<input id="m_zone" type="text" placeholder="example.com."></label>
++        </div>
++        <div class="checkbox-row">
++          <label><input id="m_dryrun" type="checkbox"> Dry Run</label>
++          <label><input id="m_recreate" type="checkbox"> Recreate</label>
++          <label><input id="m_soa" type="checkbox"> Ignore SOA Serial</label>
++          <label><input id="m_cname" type="checkbox"> Auto-fix CNAME Conflicts</label>
++          <label><input id="m_txt" type="checkbox"> Normalize TXT Escapes</label>
++        </div>
++        <div class="row">
++          <label>Timeout (s)<input id="m_timeout" type="number" value="10" min="1" step="1" style="width:70px"></label>
++          <label>Retries<input id="m_retries" type="number" value="3" min="0" step="1" style="width:60px"></label>
++          <label>Backoff (s)<input id="m_backoff" type="number" value="0.5" min="0" step="0.1" style="width:70px"></label>
++          <label>Max backoff (s)<input id="m_max_backoff" type="number" value="5" min="0" step="0.5" style="width:70px"></label>
++          <label>Jitter (s)<input id="m_jitter" type="number" value="0.1" min="0" step="0.05" style="width:70px"></label>
++          <label></label>
++        </div>
++        <div class="btn-row">
++          <button class="primary" onclick="migrateZone()">Migrate Zone</button>
++        </div>
++      </div>
++
++      <!-- Zone functions -->
++      <div id="tab-functions" class="tab-panel">
++        <div class="row">
++          <label>Zone name<input id="i_zone" type="text" placeholder="example.com."></label>
++          <label style="flex:0;min-width:110px">Server
++            <select id="i_server">
++              <option value="source">source</option>
++              <option value="target">target</option>
++            </select>
++          </label>
++        </div>
++        <div class="btn-row">
++          <button onclick="call('/api/get-zone', {zone_name: v('i_zone'), server: v('i_server')})">Get Zone</button>
++          <button onclick="call('/api/zone-exists', {zone_name: v('i_zone'), server: v('i_server')})">Zone Exists</button>
++          <button onclick="call('/api/list-zones', {server: v('i_server')}, true)">List Zones</button>
++          <button class="danger" onclick="call('/api/delete-zone', {zone_name: v('i_zone'), server: v('i_server')})">Delete Zone</button>
++        </div>
++
++      </div>
++
++      <!-- Zone Create -->
++      <div id="tab-create" class="tab-panel">
++        <div class="row">
++          <label>Server
++            <select id="c_server">
++              <option value="target">target</option>
++              <option value="source">source</option>
++            </select>
++          </label>
++        </div>
++        <div class="template-row">
++          <span class="template-label">Templates:</span>
++          <button onclick="fillTemplate('c_payload','zone_native')">Native</button>
++          <button onclick="fillTemplate('c_payload','zone_primary')">Primary</button>
++          <button onclick="fillTemplate('c_payload','zone_secondary')">Secondary</button>
++        </div>
++        <div class="row">
++          <label>Zone payload (JSON)
++            <textarea id="c_payload" class="json-input" placeholder='{"name":"example.com.","kind":"Native","nameservers":["ns1.example.com."]}'></textarea>
++          </label>
++        </div>
++        <div class="btn-row">
++          <button class="primary" onclick="createZone()">Create Zone</button>
++        </div>
++      </div>
++
++      <!-- Zone Patch -->
++      <div id="tab-patch" class="tab-panel">
++        <div class="row">
++          <label>Zone name<input id="p_zone" type="text" placeholder="example.com."></label>
++          <label style="flex:0;min-width:120px">Server
++            <select id="p_server">
++              <option value="target">target</option>
++              <option value="source">source</option>
++            </select>
++          </label>
++        </div>
++        <div class="template-row">
++          <span class="template-label">Templates:</span>
++          <button onclick="fillTemplate('p_rrsets','rrset_a')">A</button>
++          <button onclick="fillTemplate('p_rrsets','rrset_aaaa')">AAAA</button>
++          <button onclick="fillTemplate('p_rrsets','rrset_cname')">CNAME</button>
++          <button onclick="fillTemplate('p_rrsets','rrset_mx')">MX</button>
++          <button onclick="fillTemplate('p_rrsets','rrset_txt')">TXT</button>
++          <button onclick="fillTemplate('p_rrsets','rrset_ns')">NS</button>
++          <button onclick="fillTemplate('p_rrsets','rrset_delete')">DELETE</button>
++        </div>
++        <div class="row">
++          <label>RRsets (JSON array)
++            <textarea id="p_rrsets" class="json-input" placeholder='[{"name":"www.example.com.","type":"A","ttl":300,"changetype":"REPLACE","records":[{"content":"1.2.3.4","disabled":false}]}]'></textarea>
++          </label>
++        </div>
++        <div class="btn-row">
++          <button class="primary" onclick="patchZoneRrsets()">Patch RRsets</button>
++        </div>
++      </div>
++
++      <!-- CLI -->
++      <div id="tab-cli" class="tab-panel">
++        <!-- Mode toggle -->
++        <div class="checkbox-row" style="margin-bottom:0.75rem">
++          <label><input type="radio" name="cli_mode" id="cli_mode_single" value="single" checked onchange="cliModeChange()"> Single zone</label>
++          <label><input type="radio" name="cli_mode" id="cli_mode_batch" value="batch" onchange="cliModeChange()"> Batch zones</label>
++        </div>
++        <div class="row" id="cli_single_row">
++          <label>Zone name<input id="cli_zone" type="text" placeholder="example.com."></label>
++        </div>
++        <div class="row" id="cli_batch_row" style="display:none">
++          <label>Zones (one per line)
++            <textarea id="cli_zones" class="json-input" style="min-height:80px" placeholder="example.com.&#10;another.org."></textarea>
++          </label>
++        </div>
++        <div class="checkbox-row">
++          <label><input id="cli_dryrun" type="checkbox"> Dry Run</label>
++          <label><input id="cli_recreate" type="checkbox"> Recreate</label>
++          <label><input id="cli_soa" type="checkbox"> Ignore SOA Serial</label>
++          <label><input id="cli_cname" type="checkbox"> Auto-fix CNAME</label>
++          <label><input id="cli_dcname" type="checkbox"> Auto-fix Double CNAME</label>
++          <label><input id="cli_txt" type="checkbox"> Normalize TXT</label>
++        </div>
++        <div class="row">
++          <label>Log Level
++            <select id="cli_log_level">
++              <option value="INFO">INFO</option>
++              <option value="DEBUG">DEBUG</option>
++              <option value="WARNING">WARNING</option>
++              <option value="ERROR">ERROR</option>
++            </select>
++          </label>
++          <label>On Error
++            <select id="cli_on_error">
++              <option value="continue">continue</option>
++              <option value="stop">stop</option>
++            </select>
++          </label>
++          <label>Concurrency<input id="cli_concurrency" type="number" value="10" min="1" step="1" style="width:70px"></label>
++          <label>Timeout (s)<input id="cli_timeout" type="number" value="10" min="1" step="1" style="width:70px"></label>
++          <label>Retries<input id="cli_retries" type="number" value="3" min="0" step="1" style="width:60px"></label>
++          <label>Backoff (s)<input id="cli_backoff" type="number" value="0.5" min="0" step="0.1" style="width:70px"></label>
++          <label>Max backoff (s)<input id="cli_max_backoff" type="number" value="5" min="0" step="0.5" style="width:70px"></label>
++          <label>Jitter (s)<input id="cli_jitter" type="number" value="0.1" min="0" step="0.05" style="width:70px"></label>
++          <label>Progress interval (s)<input id="cli_progress_interval" type="number" value="30" min="0" step="1" style="width:70px"></label>
++          <label>Graceful timeout (s)<input id="cli_graceful_timeout" type="number" value="0" min="0" step="1" style="width:70px" title="Seconds to wait on interrupt for queued work to finish (0 = wait indefinitely)"></label>
++          <label></label>
++        </div>
++        <div class="btn-row">
++          <button class="primary" onclick="runCLI()">Run CLI</button>
++        </div>
++      </div>
++
++    </div><!-- /tabs-wrapper -->
++
++  </div><!-- /right-panel -->
++
++</div><!-- /app-body -->
++
++<script>
++  const TEMPLATES = {
++    zone_native:    { name: "example.com.", kind: "Native", nameservers: ["ns1.example.com.", "ns2.example.com."] },
++    zone_primary:   { name: "example.com.", kind: "Master", nameservers: ["ns1.example.com.", "ns2.example.com."] },
++    zone_secondary: { name: "example.com.", kind: "Slave",  masters: ["1.2.3.4"] },
++    rrset_a:      [{ name: "www.example.com.",   type: "A",     ttl: 300,  changetype: "REPLACE", records: [{ content: "1.2.3.4",                         disabled: false }] }],
++    rrset_aaaa:   [{ name: "www.example.com.",   type: "AAAA",  ttl: 300,  changetype: "REPLACE", records: [{ content: "2001:db8::1",                     disabled: false }] }],
++    rrset_cname:  [{ name: "alias.example.com.", type: "CNAME", ttl: 300,  changetype: "REPLACE", records: [{ content: "target.example.com.",              disabled: false }] }],
++    rrset_mx:     [{ name: "example.com.",       type: "MX",    ttl: 300,  changetype: "REPLACE", records: [{ content: "10 mail.example.com.",             disabled: false }] }],
++    rrset_txt:    [{ name: "example.com.",       type: "TXT",   ttl: 300,  changetype: "REPLACE", records: [{ content: "\"v=spf1 include:example.com ~all\"", disabled: false }] }],
++    rrset_ns:     [{ name: "sub.example.com.",   type: "NS",    ttl: 3600, changetype: "REPLACE", records: [{ content: "ns1.example.com.",                 disabled: false }] }],
++    rrset_delete: [{ name: "www.example.com.",   type: "A",                changetype: "DELETE" }],
++  };
++
++  function fillTemplate(id, key) {
++    document.getElementById(id).value = JSON.stringify(TEMPLATES[key], null, 2);
++  }
++
++  function v(id) { return document.getElementById(id).value.trim(); }
++  function cb(id) { return document.getElementById(id).checked; }
++
++  function swapConfig() {
++    const pairs = [
++      ['source_url', 'target_url'],
++      ['source_key', 'target_key'],
++      ['source_server_id', 'target_server_id'],
++    ];
++    for (const [a, b] of pairs) {
++      const ea = document.getElementById(a);
++      const eb = document.getElementById(b);
++      const tmp = ea.value;
++      ea.value = eb.value;
++      eb.value = tmp;
++    }
++  }
++
++  function getConfig() {
++    return {
++      source_url: v('source_url'),
++      source_key: v('source_key'),
++      source_server_id: v('source_server_id'),
++      target_url: v('target_url'),
++      target_key: v('target_key'),
++      target_server_id: v('target_server_id'),
++      verify_ssl: false,
++    };
++  }
++
++  function setResult(data, isBatchTable) {
++    const box = document.getElementById('result-box');
++    const header = document.getElementById('result-header');
++
++    if (data !== null && typeof data === 'object' && data.error) {
++      box.className = 'err';
++      header.className = 'err';
++      header.textContent = data.error;
++      box.textContent = JSON.stringify(data, null, 2);
++      return;
++    }
++
++    box.className = 'ok';
++    header.className = 'ok';
++
++    if (isBatchTable && data.results) {
++      const s = data.summary;
++      const rows = data.results.map(r => {
++        const cls = r.success ? 'ok' : 'err';
++        const detail = r.success
++          ? `${r.action} (${r.changes} change${r.changes !== 1 ? 's' : ''})`
++          : r.error;
++        return `<tr class="${cls}"><td>${r.zone}</td><td>${r.success ? '✓' : '✗'}</td><td>${detail}</td></tr>`;
++      }).join('');
++      header.textContent = `OK — total: ${s.total}, succeeded: ${s.succeeded}, failed: ${s.failed}${s.dry_run ? ' (dry run)' : ''}`;
++      box.innerHTML = `<table class="batch-table"><thead><tr><th>Zone</th><th>Status</th><th>Detail</th></tr></thead><tbody>${rows}</tbody></table>`;
++    } else {
++      header.textContent = 'OK';
++      box.textContent = JSON.stringify(data, null, 2);
++    }
++  }
++
++  async function call(endpoint, extra = {}, isBatchTable = false) {
++    const box = document.getElementById('result-box');
++    const header = document.getElementById('result-header');
++    const buttons = document.querySelectorAll('button');
++    buttons.forEach(b => b.disabled = true);
++    box.className = '';
++    box.textContent = 'Loading…';
++    header.textContent = '';
++    header.className = '';
++
++    const payload = { ...extra, config: getConfig() };
++    try {
++      const resp = await fetch(endpoint, {
++        method: 'POST',
++        headers: { 'Content-Type': 'application/json' },
++        body: JSON.stringify(payload),
++      });
++      const data = await resp.json();
++      setResult(data, isBatchTable);
++    } catch (e) {
++      box.className = 'err';
++      header.className = 'err';
++      header.textContent = 'Network error';
++      box.textContent = e.message;
++    } finally {
++      buttons.forEach(b => b.disabled = false);
++    }
++  }
++
++  function migrateZone() {
++    call('/api/migrate', {
++      zone_name: v('m_zone'),
++      dry_run: cb('m_dryrun'),
++      recreate: cb('m_recreate'),
++      ignore_soa_serial: cb('m_soa'),
++      auto_fix_cname_conflicts: cb('m_cname'),
++      normalize_txt_escapes: cb('m_txt'),
++      timeout: parseFloat(v('m_timeout')) || 10.0,
++      retries: parseInt(v('m_retries')) || 3,
++      retry_backoff: parseFloat(v('m_backoff')) || 0.5,
++      retry_max_backoff: parseFloat(v('m_max_backoff')) || 5.0,
++      retry_jitter: parseFloat(v('m_jitter')) || 0.1,
++    });
++  }
++
++  function jsonVal(id) {
++    try { return JSON.parse(document.getElementById(id).value); }
++    catch(e) { alert('Invalid JSON: ' + e.message); return null; }
++  }
++
++  function createZone() {
++    const payload = jsonVal('c_payload');
++    if (payload === null) return;
++    call('/api/create-zone', { zone_payload: payload, server: v('c_server') });
++  }
++
++  function patchZoneRrsets() {
++    const rrsets = jsonVal('p_rrsets');
++    if (rrsets === null) return;
++    call('/api/patch-zone-rrsets', { zone_name: v('p_zone'), rrsets, server: v('p_server') });
++  }
++
++  function cliModeChange() {
++    const batch = document.getElementById('cli_mode_batch').checked;
++    document.getElementById('cli_single_row').style.display = batch ? 'none' : '';
++    document.getElementById('cli_batch_row').style.display  = batch ? ''     : 'none';
++  }
++
++  function setCliResult(data) {
++    const box = document.getElementById('result-box');
++    const header = document.getElementById('result-header');
++    if (data.error) {
++      box.className = 'err';
++      header.className = 'err';
++      header.textContent = data.error;
++      box.textContent = JSON.stringify(data, null, 2);
++      return;
++    }
++    const ok = data.returncode === 0;
++    box.className = ok ? 'ok' : 'err';
++    header.className = ok ? 'ok' : 'err';
++    header.textContent = `exit ${data.returncode}`;
++    box.textContent =
++      `--- COMMAND ---\n${data.command}\n\n` +
++      `--- STDOUT ---\n${data.stdout || '(empty)'}\n\n` +
++      `--- STDERR ---\n${data.stderr || '(empty)'}`;
++  }
++
++  async function runCLI() {
++    const box = document.getElementById('result-box');
++    const header = document.getElementById('result-header');
++    const buttons = document.querySelectorAll('button');
++    buttons.forEach(b => b.disabled = true);
++    box.className = '';
++    box.textContent = 'Running CLI…';
++    header.textContent = '';
++    header.className = '';
++
++    const batch = document.getElementById('cli_mode_batch').checked;
++    const payload = {
++      zone:  batch ? '' : v('cli_zone'),
++      zones: batch ? v('cli_zones') : '',
++      dry_run:                       cb('cli_dryrun'),
++      recreate:                      cb('cli_recreate'),
++      ignore_soa_serial:             cb('cli_soa'),
++      auto_fix_cname_conflicts:      cb('cli_cname'),
++      auto_fix_double_cname_conflicts: cb('cli_dcname'),
++      normalize_txt_escapes:         cb('cli_txt'),
++      on_error:  v('cli_on_error'),
++      concurrency: parseInt(v('cli_concurrency')) || 10,
++      log_level:   v('cli_log_level'),
++      timeout:          parseFloat(v('cli_timeout'))     || 10.0,
++      retries:          parseInt(v('cli_retries'))       || 3,
++      retry_backoff:    parseFloat(v('cli_backoff'))     || 0.5,
++      retry_max_backoff: parseFloat(v('cli_max_backoff')) || 5.0,
++      retry_jitter:     parseFloat(v('cli_jitter'))      || 0.1,
++      progress_interval: parseFloat(v('cli_progress_interval')) || 30.0,
++      graceful_timeout:  parseFloat(v('cli_graceful_timeout'))  || 0.0,
++      config: getConfig(),
++    };
++    try {
++      const resp = await fetch('/api/cli-run-stream', {
++        method: 'POST',
++        headers: { 'Content-Type': 'application/json' },
++        body: JSON.stringify(payload),
++      });
++      const reader = resp.body.getReader();
++      const decoder = new TextDecoder();
++      let buf = '';
++      let command = '', stdout = '', stderr = '';
++
++      function render() {
++        box.textContent =
++          `--- COMMAND ---\n${command}\n\n` +
++          `--- STDOUT ---\n${stdout || '(empty)'}\n\n` +
++          `--- STDERR ---\n${stderr || '(empty)'}`;
++        box.scrollTop = box.scrollHeight;
++      }
++
++      while (true) {
++        const { done, value } = await reader.read();
++        if (done) break;
++        buf += decoder.decode(value, { stream: true });
++        const lines = buf.split('\n');
++        buf = lines.pop();
++        for (const line of lines) {
++          if (!line.trim()) continue;
++          let msg;
++          try { msg = JSON.parse(line); } catch { continue; }
++          if (msg.type === 'command') {
++            command = msg.text;
++            header.textContent = 'streaming…';
++            render();
++          } else if (msg.type === 'stdout') {
++            stdout += msg.text;
++            render();
++          } else if (msg.type === 'stderr') {
++            stderr += msg.text;
++            render();
++          } else if (msg.type === 'done') {
++            const ok = msg.returncode === 0;
++            box.className = ok ? 'ok' : 'err';
++            header.className = ok ? 'ok' : 'err';
++            header.textContent = `exit ${msg.returncode}`;
++            render();
++          } else if (msg.type === 'error') {
++            box.className = 'err';
++            header.className = 'err';
++            header.textContent = msg.error;
++            box.textContent = JSON.stringify(msg, null, 2);
++          }
++        }
++      }
++    } catch (e) {
++      box.className = 'err';
++      header.className = 'err';
++      header.textContent = 'Network error';
++      box.textContent = e.message;
++    } finally {
++      buttons.forEach(b => b.disabled = false);
++    }
++  }
++
++  function switchTab(name) {
++    document.querySelectorAll('.tab-panel').forEach(el => el.classList.remove('active'));
++    document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
++    document.getElementById('tab-' + name).classList.add('active');
++    event.currentTarget.classList.add('active');
++    localStorage.setItem('pdns_active_tab', name);
++  }
++
++  function toggleWrap(cb) {
++    const box = document.getElementById('result-box');
++    if (cb.checked) {
++      box.style.whiteSpace = 'pre-wrap';
++      box.style.wordWrap = 'break-word';
++      box.style.wordBreak = 'normal';
++    } else {
++      box.style.whiteSpace = '';
++      box.style.wordWrap = '';
++      box.style.wordBreak = '';
++    }
++    localStorage.setItem('pdns_wrap', cb.checked ? '1' : '0');
++  }
++
++  function toggleConfig() {
++    const card = document.querySelector('.config-card');
++    const collapsed = card.classList.toggle('collapsed');
++    localStorage.setItem('pdns_config_collapsed', collapsed ? '1' : '0');
++  }
++
++  (function restorePreferences() {
++    // Restore active tab
++    const savedTab = localStorage.getItem('pdns_active_tab');
++    if (savedTab) {
++      const panel = document.getElementById('tab-' + savedTab);
++      const btn = [...document.querySelectorAll('.tab-btn')]
++        .find(b => b.getAttribute('onclick') === `switchTab('${savedTab}')`);
++      if (panel && btn) {
++        document.querySelectorAll('.tab-panel').forEach(el => el.classList.remove('active'));
++        document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
++        panel.classList.add('active');
++        btn.classList.add('active');
++      }
++    }
++    // Restore config collapsed state
++    if (localStorage.getItem('pdns_config_collapsed') === '1') {
++      document.querySelector('.config-card').classList.add('collapsed');
++    }
++    // Restore wrap preference
++    if (localStorage.getItem('pdns_wrap') === '1') {
++      const cb = document.getElementById('wrap-toggle');
++      cb.checked = true;
++      toggleWrap(cb);
++    }
++  })();
++
++  (function () {
++    const handle = document.getElementById('resize-handle');
++    const leftPanel = document.querySelector('.left-panel');
++    const rightPanel = document.querySelector('.right-panel');
++    const appBody = document.querySelector('.app-body');
++
++    handle.addEventListener('mousedown', (e) => {
++      e.preventDefault();
++      handle.classList.add('dragging');
++      document.body.style.userSelect = 'none';
++      document.body.style.cursor = 'col-resize';
++
++      const startX = e.clientX;
++      const startWidth = leftPanel.getBoundingClientRect().width;
++      const rightMinW = parseFloat(getComputedStyle(rightPanel).minWidth) || 470;
++      const handleW   = handle.offsetWidth;
++
++      function onMouseMove(e) {
++        const bodyWidth = appBody.getBoundingClientRect().width;
++        const newWidth = Math.max(220, Math.min(bodyWidth - rightMinW - handleW, startWidth + e.clientX - startX));
++        leftPanel.style.width = newWidth + 'px';
++      }
++
++      function onMouseUp() {
++        handle.classList.remove('dragging');
++        document.body.style.userSelect = '';
++        document.body.style.cursor = '';
++        document.removeEventListener('mousemove', onMouseMove);
++        document.removeEventListener('mouseup', onMouseUp);
++      }
++
++      document.addEventListener('mousemove', onMouseMove);
++      document.addEventListener('mouseup', onMouseUp);
++    });
++  })();
++</script>
++</body>
++</html>
+diff --git a/docker/webui/requirements.txt b/docker/webui/requirements.txt
+new file mode 100644
+index 0000000..86c8c13
+--- /dev/null
++++ b/docker/webui/requirements.txt
+@@ -0,0 +1,3 @@
++fastapi>=0.111
++uvicorn[standard]>=0.29
++jinja2==3.1.6
+diff --git a/powerdns_migrator/async_client.py b/powerdns_migrator/async_client.py
+index 8b92c9b..a46696f 100644
+--- a/powerdns_migrator/async_client.py
++++ b/powerdns_migrator/async_client.py
+@@ -3,7 +3,7 @@ from __future__ import annotations
+ import asyncio
+ import logging
+ import random
+-from typing import Any, Dict, cast
++from typing import Any, Dict, List
+ 
+ import aiohttp
+ 
+@@ -44,9 +44,7 @@ class AsyncPowerDNSClient:
+     async def close(self) -> None:
+         await self.client.close()
+ 
+-    async def _request_json(
+-        self, method: str, path: str, **kwargs: Any
+-    ) -> Dict[str, Any]:
++    async def _request_json(self, method: str, path: str, **kwargs: Any) -> Any:
+         url = self.connection.endpoint(path)
+         last_error: Exception | None = None
+         for attempt in range(self.retries + 1):
+@@ -76,7 +74,7 @@ class AsyncPowerDNSClient:
+                             status=resp.status,
+                             body=body,
+                         )
+-                    return cast(Dict[str, Any], await resp.json())
++                    return await resp.json()
+             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                 last_error = exc
+                 if attempt >= self.retries:
+@@ -147,6 +145,9 @@ class AsyncPowerDNSClient:
+             retries_attempted=self.retries,
+         )
+ 
++    async def list_zones(self) -> List[Dict[str, Any]]:
++        return await self._request_json("GET", "/zones")
++
+     async def get_zone(self, zone_name: str) -> Dict[str, Any]:
+         zone = normalize_zone_name(zone_name)
+         return await self._request_json("GET", f"/zones/{zone}")
+diff --git a/powerdns_migrator/cli.py b/powerdns_migrator/cli.py
+index 9173819..5540b4d 100644
+--- a/powerdns_migrator/cli.py
++++ b/powerdns_migrator/cli.py
+@@ -267,7 +267,16 @@ async def _run_batch(args: argparse.Namespace) -> int:
+         if args.progress_interval <= 0:
+             return
+         while not stop_event.is_set():
+-            await asyncio.sleep(args.progress_interval)
++            try:
++                await asyncio.wait_for(
++                    asyncio.shield(stop_event.wait()),
++                    timeout=args.progress_interval,
++                )
++                break  # stop_event fired — exit without logging
++            except asyncio.TimeoutError:
++                pass  # full interval elapsed — fall through to log
++            if stop_event.is_set():
++                break
+             async with counter_lock:
+                 processed = success + failed
+                 elapsed = time.monotonic() - start_time

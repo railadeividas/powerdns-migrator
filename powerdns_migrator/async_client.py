@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-from typing import Any, Dict, cast
+from typing import Any, Dict, List, cast
 
 import aiohttp
 
@@ -44,9 +44,7 @@ class AsyncPowerDNSClient:
     async def close(self) -> None:
         await self.client.close()
 
-    async def _request_json(
-        self, method: str, path: str, **kwargs: Any
-    ) -> Dict[str, Any]:
+    async def _request_json(self, method: str, path: str, **kwargs: Any) -> Any:
         url = self.connection.endpoint(path)
         last_error: Exception | None = None
         for attempt in range(self.retries + 1):
@@ -76,7 +74,7 @@ class AsyncPowerDNSClient:
                             status=resp.status,
                             body=body,
                         )
-                    return cast(Dict[str, Any], await resp.json())
+                    return await resp.json()
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                 last_error = exc
                 if attempt >= self.retries:
@@ -147,9 +145,12 @@ class AsyncPowerDNSClient:
             retries_attempted=self.retries,
         )
 
+    async def list_zones(self) -> List[Dict[str, Any]]:
+        return cast(List[Dict[str, Any]], await self._request_json("GET", "/zones"))
+
     async def get_zone(self, zone_name: str) -> Dict[str, Any]:
         zone = normalize_zone_name(zone_name)
-        return await self._request_json("GET", f"/zones/{zone}")
+        return cast(Dict[str, Any], await self._request_json("GET", f"/zones/{zone}"))
 
     async def zone_exists(self, zone_name: str) -> Dict[str, Any] | None:
         try:
@@ -164,7 +165,10 @@ class AsyncPowerDNSClient:
         await self._request_ok("DELETE", f"/zones/{zone}")
 
     async def create_zone(self, zone_payload: Dict[str, Any]) -> Dict[str, Any]:
-        return await self._request_json("POST", "/zones", json=zone_payload)
+        return cast(
+            Dict[str, Any],
+            await self._request_json("POST", "/zones", json=zone_payload),
+        )
 
     async def patch_zone_rrsets(
         self, zone_name: str, rrsets: list[Dict[str, Any]]

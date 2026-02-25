@@ -267,7 +267,16 @@ async def _run_batch(args: argparse.Namespace) -> int:
         if args.progress_interval <= 0:
             return
         while not stop_event.is_set():
-            await asyncio.sleep(args.progress_interval)
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(stop_event.wait()),
+                    timeout=args.progress_interval,
+                )
+                break  # stop_event fired — exit without logging
+            except asyncio.TimeoutError:
+                pass  # full interval elapsed — fall through to log
+            if stop_event.is_set():
+                break
             async with counter_lock:
                 processed = success + failed
                 elapsed = time.monotonic() - start_time
