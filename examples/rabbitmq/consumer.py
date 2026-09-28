@@ -4,15 +4,16 @@
 
 import asyncio
 import json
-import os
 import logging
-from typing import Optional
+import os
 
 import aio_pika
 
 from powerdns_migrator.async_migrator import AsyncZoneMigrator
 from powerdns_migrator.config import PowerDNSConnection
 from powerdns_migrator.errors import PowerDNSMigratorError
+
+logger = logging.getLogger(__name__)
 
 # RabbitMQ configuration
 RABBIT_URL = os.getenv("RABBIT_URL", "amqp://admin:pass2login@localhost/")
@@ -87,7 +88,7 @@ async def handle_message(
 ) -> None:
     async with message.process(requeue=True):
         body = message.body.decode("utf-8").strip()
-        zone: Optional[str] = None
+        zone: str | None = None
 
         # Message can be JSON like {"zone": "example.com."} or raw string "example.com."
         try:
@@ -100,20 +101,20 @@ async def handle_message(
             zone = body
 
         if not zone:
-            logging.warning("Message without zone: %s", body)
+            logger.warning("Message without zone: %s", body)
             return
 
-        logging.info("Migrating zone: %s", zone)
+        logger.info("Migrating zone: %s", zone)
         try:
             result = await migrator.migrate(zone, recreate=RECREATE, dry_run=DRY_RUN)
-            logging.info(
+            logger.info(
                 "Migrated zone: %s | action: %s | changes: %d",
                 zone,
                 result.get("migrator_action"),
                 len(result.get("changes", {})),
             )
         except PowerDNSMigratorError as exc:
-            logging.error("Zone %s failed: %s", zone, exc)
+            logger.error("Zone %s failed: %s", zone, exc)
             raise  # requeue
 
 

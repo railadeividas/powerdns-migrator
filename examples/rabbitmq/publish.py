@@ -3,10 +3,12 @@
 # pip install aio-pika
 
 import asyncio
-import os
 import logging
+import os
 
 import aio_pika
+
+logger = logging.getLogger(__name__)
 
 RABBIT_URL = os.getenv("RABBIT_URL", "amqp://admin:pass2login@localhost/")
 QUEUE_NAME = os.getenv("QUEUE_NAME", "powerdns-migrator")
@@ -39,9 +41,9 @@ async def main() -> None:
             message,
             routing_key=QUEUE_NAME,
         )
-        logging.info("Published zone: %s", zone)
+        logger.info("Published zone: %s", zone)
 
-    logging.info("Published %d test zones", len(TEST_ZONES))
+    logger.info("Published %d test zones", len(TEST_ZONES))
 
     await channel.close()
     await connection.close()

@@ -1,15 +1,44 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 from .async_client import AsyncPowerDNSClient
 from .config import PowerDNSConnection
 from .utils import normalize_zone_name
 
+logger = logging.getLogger(__name__)
+
 
 class AsyncZoneMigrator:
-    """Async zone migrator with rrset diffing for existing target zones."""
+    """Orchestrates DNS zone migrations between two PowerDNS servers.
+
+    Fetches a zone from a source server, sanitizes it, computes a minimal
+    changeset by diffing against the current target state, and applies the
+    changes.  Supports dry-run mode, full zone recreation, and several
+    optional conflict-resolution strategies.
+
+    Args:
+        source: Source PowerDNS connection config or a pre-built
+            :class:`~powerdns_migrator.async_client.AsyncPowerDNSClient`.
+        target: Target PowerDNS connection config or a pre-built
+            :class:`~powerdns_migrator.async_client.AsyncPowerDNSClient`.
+        timeout: HTTP request timeout in seconds (default: ``10.0``).
+        retries: Retry count for transient API errors (default: ``3``).
+        retry_backoff: Base backoff between retries in seconds (default: ``0.5``).
+        retry_max_backoff: Maximum backoff in seconds (default: ``5.0``).
+        retry_jitter: Maximum random jitter added to backoff (default: ``0.1``).
+        ignore_soa_serial: When ``True``, the SOA serial is excluded from
+            diff comparisons and the target serial is preserved on write.
+        auto_fix_cname_conflicts: When ``True``, CNAME coexistence violations
+            are resolved automatically: apex CNAMEs are dropped; at non-apex
+            names with both CNAME and other types, only the CNAME is kept.
+        auto_fix_double_cname_conflicts: When ``True``, CNAME RRSets that
+            contain more than one record are trimmed to the first record only.
+        normalize_txt_escapes: When ``True``, decimal escape sequences in
+            TXT/SPF records (e.g. ``\\239``) are decoded to raw bytes before
+            comparison, enabling equivalence detection across backends.
+    """
 
     def __init__(
         self,
@@ -62,7 +91,34 @@ class AsyncZoneMigrator:
 
     async def migrate(
         self, zone_name: str, recreate: bool = False, dry_run: bool = False
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
+        """Migrate a single DNS zone from source to target.
+
+        Fetches the zone from the source server, sanitizes the payload,
+        checks whether it exists on the target, and applies the minimal set
+        of changes required to bring the target in sync.
+
+        Args:
+            zone_name: Zone name to migrate, with or without trailing dot
+                (e.g. ``"example.com."`` or ``"example.com"``).
+            recreate: When ``True``, delete the zone on the target before
+                recreating it from scratch.  When ``False`` (default), only
+                changed RRSets are patched.
+            dry_run: When ``True``, compute and return the change plan without
+                writing anything to the target server.
+
+        Returns:
+            A dict with keys ``source_zone`` (sanitized source payload),
+            ``target_zone`` (resulting target data), ``changes`` (list of
+            RRSet change dicts applied or planned), and ``migrator_action``
+            — one of ``CREATE_ZONE``, ``PATCH_ZONE``, ``RECREATE_ZONE``,
+            or ``NOOP``.
+
+        Raises:
+            PowerDNSAPIError: Source or target API returned an HTTP error.
+            PowerDNSConnectionError: Network failure communicating with source
+                or target after all retries.
+        """
         zone = normalize_zone_name(zone_name)
         source_zone = await self.source_client.get_zone(zone)
         sanitized = self._sanitize_zone(source_zone)
@@ -71,18 +127,18 @@ class AsyncZoneMigrator:
         if target_zone:
             changes = self._build_changes(zone, sanitized, target_zone)
             if changes:
-                logging.debug(
+                logger.debug(
                     "Pending zone %s rrset changes: %d",
                     zone,
                     len(changes),
                 )
 
                 if recreate:
-                    logging.debug("Zone %s recreating due to rrset changes", zone)
+                    logger.debug("Zone %s recreating due to rrset changes", zone)
                     if not dry_run:
                         await self.target_client.delete_zone(zone)
                         created = await self.target_client.create_zone(sanitized)
-                    logging.debug("Zone %s recreated on target", zone)
+                    logger.debug("Zone %s recreated on target", zone)
                     return {
                         "source_zone": sanitized,
                         "target_zone": created if not dry_run else {},
@@ -92,7 +148,7 @@ class AsyncZoneMigrator:
 
                 if not dry_run:
                     await self.target_client.patch_zone_rrsets(zone, changes)
-                logging.debug("Zone %s patched on target", zone)
+                logger.debug("Zone %s patched on target", zone)
                 return {
                     "source_zone": sanitized,
                     "target_zone": {},
@@ -100,7 +156,7 @@ class AsyncZoneMigrator:
                     "migrator_action": "PATCH_ZONE",
                 }
             else:
-                logging.debug("Zone %s is already in sync", zone)
+                logger.debug("Zone %s is already in sync", zone)
 
             return {
                 "source_zone": sanitized,
@@ -111,7 +167,7 @@ class AsyncZoneMigrator:
 
         if not dry_run:
             created = await self.target_client.create_zone(sanitized)
-        logging.debug("Zone %s created on target", zone)
+        logger.debug("Zone %s created on target", zone)
         return {
             "source_zone": sanitized,
             "target_zone": created if not dry_run else {},
@@ -119,7 +175,7 @@ class AsyncZoneMigrator:
             "migrator_action": "CREATE_ZONE",
         }
 
-    def _sanitize_zone(self, zone: Dict[str, Any]) -> Dict[str, Any]:
+    def _sanitize_zone(self, zone: dict[str, Any]) -> dict[str, Any]:
         keep_keys = {
             "name",
             "kind",
@@ -129,7 +185,7 @@ class AsyncZoneMigrator:
             "soa_edit",
             "soa_edit_api",
         }
-        sanitized: Dict[str, Any] = {key: zone[key] for key in keep_keys if key in zone}
+        sanitized: dict[str, Any] = {key: zone[key] for key in keep_keys if key in zone}
         sanitized["name"] = normalize_zone_name(zone["name"])
         sanitized.setdefault("kind", "Native")
         sanitized["rrsets"] = self._sanitize_rrsets(zone.get("rrsets", []))
@@ -139,8 +195,8 @@ class AsyncZoneMigrator:
             )
         return sanitized
 
-    def _sanitize_rrsets(self, rrsets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        cleaned: List[Dict[str, Any]] = []
+    def _sanitize_rrsets(self, rrsets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        cleaned: list[dict[str, Any]] = []
         for rr in rrsets:
             records = [
                 {
@@ -164,15 +220,15 @@ class AsyncZoneMigrator:
         return cleaned
 
     def _drop_cname_conflicts(
-        self, rrsets: List[Dict[str, Any]], zone_name: str
-    ) -> List[Dict[str, Any]]:
+        self, rrsets: list[dict[str, Any]], zone_name: str
+    ) -> list[dict[str, Any]]:
         apex_name = normalize_zone_name(zone_name)
-        rrsets_by_name: Dict[str, List[Dict[str, Any]]] = {}
+        rrsets_by_name: dict[str, list[dict[str, Any]]] = {}
         for rrset in rrsets:
             name = normalize_zone_name(rrset["name"])
             rrsets_by_name.setdefault(name, []).append(rrset)
 
-        cleaned: List[Dict[str, Any]] = []
+        cleaned: list[dict[str, Any]] = []
         for name, grouped in rrsets_by_name.items():
             cname_rrsets = [rr for rr in grouped if rr.get("type") == "CNAME"]
             if self.auto_fix_double_cname_conflicts:
@@ -182,7 +238,7 @@ class AsyncZoneMigrator:
                         removed_records = records[1:]
                         kept_record = records[:1]
                         rrset["records"] = kept_record
-                        logging.warning(
+                        logger.warning(
                             "Auto-fix: trimming CNAME rrset %s to first record; kept=%s removed=%s",
                             name,
                             [record.get("content", "") for record in kept_record],
@@ -208,7 +264,7 @@ class AsyncZoneMigrator:
                     for record in rr.get("records", [])
                 ]
                 cleaned.extend([rr for rr in grouped if rr not in cname_rrsets])
-                logging.warning(
+                logger.warning(
                     "Auto-fix: dropping %s rrsets for apex %s because CNAME is invalid; kept=%s removed=%s",
                     ", ".join(removed_types),
                     name,
@@ -237,7 +293,7 @@ class AsyncZoneMigrator:
                     if rr not in cname_rrsets
                     for record in rr.get("records", [])
                 ]
-                logging.warning(
+                logger.warning(
                     "Auto-fix: dropping %s rrsets for %s because CNAME exists; kept=%s removed=%s",
                     ", ".join(removed_types),
                     name,
@@ -248,13 +304,13 @@ class AsyncZoneMigrator:
                 cleaned.extend(grouped)
         return cleaned
 
-    def _rrset_key(self, rrset: Dict[str, Any]) -> Tuple[str, str]:
+    def _rrset_key(self, rrset: dict[str, Any]) -> tuple[str, str]:
         return (normalize_zone_name(rrset["name"]), rrset["type"])
 
-    def _rrset_equal(self, source: Dict[str, Any], target: Dict[str, Any]) -> bool:
+    def _rrset_equal(self, source: dict[str, Any], target: dict[str, Any]) -> bool:
         return self._normalize_rrset(source) == self._normalize_rrset(target)
 
-    def _normalize_rrset(self, rrset: Dict[str, Any]) -> Dict[str, Any]:
+    def _normalize_rrset(self, rrset: dict[str, Any]) -> dict[str, Any]:
         records = rrset.get("records", [])
         normalized_records = sorted(
             (
@@ -284,7 +340,7 @@ class AsyncZoneMigrator:
             "comments": normalized_comments,
         }
 
-    def _rrset_change(self, changetype: str, rrset: Dict[str, Any]) -> Dict[str, Any]:
+    def _rrset_change(self, changetype: str, rrset: dict[str, Any]) -> dict[str, Any]:
         payload = {
             "name": normalize_zone_name(rrset["name"]),
             "type": rrset["type"],
@@ -299,9 +355,9 @@ class AsyncZoneMigrator:
     def _build_changes(
         self,
         zone_name: str,
-        source_zone: Dict[str, Any],
-        target_zone: Dict[str, Any],
-    ) -> List[Dict[str, Any]]:
+        source_zone: dict[str, Any],
+        target_zone: dict[str, Any],
+    ) -> list[dict[str, Any]]:
         source_rrsets = {
             self._rrset_key(rr): rr for rr in source_zone.get("rrsets", [])
         }
@@ -309,13 +365,13 @@ class AsyncZoneMigrator:
             self._rrset_key(rr): rr for rr in target_zone.get("rrsets", [])
         }
 
-        deletes: List[Dict[str, Any]] = []
-        updates: List[Dict[str, Any]] = []
-        creates: List[Dict[str, Any]] = []
+        deletes: list[dict[str, Any]] = []
+        updates: list[dict[str, Any]] = []
+        creates: list[dict[str, Any]] = []
 
         for key, target_rrset in target_rrsets.items():
             if key not in source_rrsets:
-                logging.debug(
+                logger.debug(
                     "Pending zone %s rrset deletion: %s/%s",
                     zone_name,
                     target_rrset["name"],
@@ -328,20 +384,20 @@ class AsyncZoneMigrator:
             if target_rrset is None:
                 continue
             if not self._rrset_equal(source_rrset, target_rrset):
-                logging.debug(
+                logger.debug(
                     "Pending zone %s rrset update: %s/%s",
                     zone_name,
                     source_rrset["name"],
                     source_rrset["type"],
                 )
-                logging.debug(
+                logger.debug(
                     "Pending zone %s rrset %s/%s before: %s",
                     zone_name,
                     target_rrset["name"],
                     target_rrset["type"],
                     self._rrset_summary(target_rrset),
                 )
-                logging.debug(
+                logger.debug(
                     "Pending zone %s rrset %s/%s after: %s",
                     zone_name,
                     source_rrset["name"],
@@ -356,7 +412,7 @@ class AsyncZoneMigrator:
 
         for key, source_rrset in source_rrsets.items():
             if key not in target_rrsets:
-                logging.debug(
+                logger.debug(
                     "Pending zone %s rrset creation: %s/%s",
                     zone_name,
                     source_rrset["name"],
@@ -415,8 +471,8 @@ class AsyncZoneMigrator:
         return " ".join(parts)
 
     def _preserve_target_soa_serial(
-        self, source_rrset: Dict[str, Any], target_rrset: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self, source_rrset: dict[str, Any], target_rrset: dict[str, Any]
+    ) -> dict[str, Any]:
         target_records = target_rrset.get("records", [])
         if not target_records:
             return source_rrset
@@ -438,7 +494,7 @@ class AsyncZoneMigrator:
         updated["records"] = updated_records
         return updated
 
-    def _rrset_summary(self, rrset: Dict[str, Any]) -> Dict[str, Any]:
+    def _rrset_summary(self, rrset: dict[str, Any]) -> dict[str, Any]:
         return {
             "name": normalize_zone_name(rrset["name"]),
             "type": rrset["type"],

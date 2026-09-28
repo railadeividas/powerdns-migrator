@@ -5,8 +5,9 @@ import json
 import os
 import shlex
 import tempfile
+from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
@@ -16,8 +17,8 @@ from pydantic import BaseModel
 from powerdns_migrator import (
     AsyncPowerDNSClient,
     AsyncZoneMigrator,
-    PowerDNSConnection,
     PowerDNSAPIError,
+    PowerDNSConnection,
     PowerDNSConnectionError,
 )
 
@@ -72,14 +73,14 @@ class MigrateRequest(BaseModel):
 
 
 class CreateZoneRequest(BaseModel):
-    zone_payload: Dict[str, Any]
+    zone_payload: dict[str, Any]
     server: str = "target"
     config: ConnectionConfig = ConnectionConfig()
 
 
 class PatchZoneRrsetsRequest(BaseModel):
     zone_name: str
-    rrsets: List[Dict[str, Any]]
+    rrsets: list[dict[str, Any]]
     server: str = "target"
     config: ConnectionConfig = ConnectionConfig()
 
@@ -127,7 +128,7 @@ def _conn(cfg: ConnectionConfig, side: str) -> PowerDNSConnection:
     )
 
 
-def _err(exc: Exception) -> Dict[str, Any]:
+def _err(exc: Exception) -> dict[str, Any]:
     if isinstance(exc, PowerDNSAPIError):
         return {
             "error": "PowerDNSAPIError",
@@ -163,12 +164,12 @@ templates = Jinja2Templates(directory=Path(__file__).parent)
 
 
 @app.get("/api/health")
-async def health() -> Dict[str, str]:
+async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
 @app.post("/api/get-zone")
-async def api_get_zone(req: ZoneRequest) -> Dict[str, Any]:
+async def api_get_zone(req: ZoneRequest) -> dict[str, Any]:
     client = AsyncPowerDNSClient(_conn(req.config, req.server))
     try:
         data = await client.get_zone(req.zone_name)
@@ -202,7 +203,7 @@ async def api_list_zones(req: ListZonesRequest) -> Any:
 
 
 @app.post("/api/migrate")
-async def api_migrate(req: MigrateRequest) -> Dict[str, Any]:
+async def api_migrate(req: MigrateRequest) -> dict[str, Any]:
     migrator = AsyncZoneMigrator(
         source=_conn(req.config, "source"),
         target=_conn(req.config, "target"),
@@ -222,14 +223,14 @@ async def api_migrate(req: MigrateRequest) -> Dict[str, Any]:
             dry_run=req.dry_run,
         )
         return result
-    except (PowerDNSAPIError, PowerDNSConnectionError, Exception) as exc:
+    except Exception as exc:  # noqa: BLE001 - dev UI must always return JSON, never crash
         return _err(exc)
     finally:
         await migrator.close()
 
 
 @app.post("/api/delete-zone")
-async def api_delete_zone(req: ZoneRequest) -> Dict[str, Any]:
+async def api_delete_zone(req: ZoneRequest) -> dict[str, Any]:
     client = AsyncPowerDNSClient(_conn(req.config, req.server))
     try:
         await client.delete_zone(req.zone_name)
@@ -241,7 +242,7 @@ async def api_delete_zone(req: ZoneRequest) -> Dict[str, Any]:
 
 
 @app.post("/api/create-zone")
-async def api_create_zone(req: CreateZoneRequest) -> Dict[str, Any]:
+async def api_create_zone(req: CreateZoneRequest) -> dict[str, Any]:
     client = AsyncPowerDNSClient(_conn(req.config, req.server))
     try:
         data = await client.create_zone(req.zone_payload)
@@ -253,7 +254,7 @@ async def api_create_zone(req: CreateZoneRequest) -> Dict[str, Any]:
 
 
 @app.post("/api/patch-zone-rrsets")
-async def api_patch_zone_rrsets(req: PatchZoneRrsetsRequest) -> Dict[str, Any]:
+async def api_patch_zone_rrsets(req: PatchZoneRrsetsRequest) -> dict[str, Any]:
     client = AsyncPowerDNSClient(_conn(req.config, req.server))
     try:
         await client.patch_zone_rrsets(req.zone_name, req.rrsets)
@@ -322,7 +323,7 @@ async def api_cli_run_stream(req: CLIRunRequest) -> StreamingResponse:
         for i, a in enumerate(args)
     ]
 
-    tmp_path: Optional[str] = None
+    tmp_path: str | None = None
     if req.zone:
         args.extend(["--zone", req.zone])
     elif req.zones:
