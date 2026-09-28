@@ -168,7 +168,7 @@ The `migrate()` method returns a dictionary with detailed information about the 
 {
     "source_zone": {...},  # Sanitized zone data from source
     "target_zone": {...},  # Zone data from target (empty in dry-run mode)
-    "changes": {...},  # RRSet changes that were/would be applied
+    "changes": [...],  # RRSet changes that were/would be applied
     "migrator_action": "...",  # Action taken: CREATE_ZONE, PATCH_ZONE, RECREATE_ZONE, or NOOP
 }
 ```

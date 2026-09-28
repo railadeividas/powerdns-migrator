@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Self
 
@@ -167,7 +168,7 @@ class AsyncZoneMigrator:
             return {
                 "source_zone": sanitized,
                 "target_zone": target_zone if not dry_run else {},
-                "changes": {},
+                "changes": [],
                 "migrator_action": "NOOP",
             }
 
@@ -177,7 +178,7 @@ class AsyncZoneMigrator:
         return {
             "source_zone": sanitized,
             "target_zone": created if not dry_run else {},
-            "changes": {},
+            "changes": [],
             "migrator_action": "CREATE_ZONE",
         }
 
@@ -229,7 +230,7 @@ class AsyncZoneMigrator:
 
     def _normalize_rrset(self, rrset: dict[str, Any]) -> dict[str, Any]:
         records = rrset.get("records", [])
-        normalized_records = sorted(
+        normalized_records = [
             (
                 self._normalize_record_content(
                     rrset.get("type"), record.get("content", "")
@@ -238,9 +239,10 @@ class AsyncZoneMigrator:
                 record.get("priority"),
             )
             for record in records
-        )
+        ]
+        normalized_records.sort(key=json.dumps)
         comments = rrset.get("comments") or []
-        normalized_comments = sorted(
+        normalized_comments = [
             (
                 comment.get("content", ""),
                 bool(comment.get("disabled", False)),
@@ -248,7 +250,8 @@ class AsyncZoneMigrator:
                 comment.get("modified_at"),
             )
             for comment in comments
-        )
+        ]
+        normalized_comments.sort(key=json.dumps)
         return {
             "name": normalize_zone_name(rrset["name"]),
             "type": rrset["type"],
