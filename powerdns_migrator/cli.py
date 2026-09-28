@@ -260,7 +260,7 @@ async def _run_batch(args: argparse.Namespace) -> int:
                     timeout=args.progress_interval,
                 )
                 break  # stop_event fired — exit without logging
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass  # full interval elapsed — fall through to log
             if stop_event.is_set():
                 break
@@ -328,7 +328,7 @@ async def _run_batch(args: argparse.Namespace) -> int:
                 await asyncio.wait_for(queue.join(), timeout=args.graceful_timeout)
             else:
                 await queue.join()
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning("Graceful timeout reached; cancelling remaining tasks.")
             for task in workers:
                 task.cancel()

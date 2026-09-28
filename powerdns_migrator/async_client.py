@@ -92,7 +92,7 @@ class AsyncPowerDNSClient:
                             body=body,
                         )
                     return await resp.json()
-            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            except (TimeoutError, aiohttp.ClientError) as exc:
                 last_error = exc
                 if attempt >= self.retries:
                     break
@@ -146,7 +146,7 @@ class AsyncPowerDNSClient:
                         )
                     await resp.release()
                     return
-            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            except (TimeoutError, aiohttp.ClientError) as exc:
                 last_error = exc
                 if attempt >= self.retries:
                     break
