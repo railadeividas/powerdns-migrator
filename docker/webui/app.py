@@ -133,6 +133,8 @@ def _err(exc: Exception) -> dict[str, Any]:
             "url": exc.url,
             "status": exc.status,
             "body": exc.body,
+            "retries_attempted": exc.retries_attempted,
+            "timeout_retries_attempted": exc.timeout_retries_attempted,
         }
     if isinstance(exc, PowerDNSConnectionError):
         return {
@@ -143,6 +145,7 @@ def _err(exc: Exception) -> dict[str, Any]:
             if exc.cause
             else None,
             "retries_attempted": exc.retries_attempted,
+            "timeout_retries_attempted": exc.timeout_retries_attempted,
         }
     return {"error": type(exc).__name__, "message": str(exc)}
 

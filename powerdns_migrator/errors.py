@@ -16,6 +16,8 @@ class PowerDNSAPIError(PowerDNSMigratorError):
         url: Full request URL.
         status: HTTP status code returned by the API.
         body: Raw response body returned by the API.
+        retries_attempted: Number of retries before the final response.
+        timeout_retries_attempted: Retries caused by timeouts before the final response.
     """
 
     def __init__(
@@ -25,11 +27,15 @@ class PowerDNSAPIError(PowerDNSMigratorError):
         url: str,
         status: int,
         body: str = "",
+        retries_attempted: int = 0,
+        timeout_retries_attempted: int = 0,
     ) -> None:
         self.method = method
         self.url = url
         self.status = status
         self.body = body
+        self.retries_attempted = retries_attempted
+        self.timeout_retries_attempted = timeout_retries_attempted
         super().__init__(
             f"PowerDNS API error: {method} {url} returned {status}: {body}"
         )
@@ -46,6 +52,7 @@ class PowerDNSConnectionError(PowerDNSMigratorError):
         url: Full request URL.
         cause: The underlying exception that triggered the failure.
         retries_attempted: Number of retries performed before giving up.
+        timeout_retries_attempted: Retries caused by timeouts before giving up.
     """
 
     def __init__(
@@ -55,11 +62,13 @@ class PowerDNSConnectionError(PowerDNSMigratorError):
         url: str,
         cause: Exception | None = None,
         retries_attempted: int = 0,
+        timeout_retries_attempted: int = 0,
     ) -> None:
         self.method = method
         self.url = url
         self.cause = cause
         self.retries_attempted = retries_attempted
+        self.timeout_retries_attempted = timeout_retries_attempted
         cause_detail = f"{cause.__class__.__name__}: {cause}" if cause else "unknown"
         super().__init__(
             f"Connection failed: {method} {url} after "

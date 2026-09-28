@@ -53,6 +53,7 @@ Key flags:
 - `--retry-backoff`: base backoff seconds between retries
 - `--retry-max-backoff`: maximum backoff seconds between retries
 - `--retry-jitter`: max random jitter seconds added to backoff
+- `--retry-create-timeouts`: retry zone creation after timeouts (disabled by default)
 - `--ignore-soa-serial`: ignore SOA serial changes and keep target serial
 - `--normalize-txt-escapes`: normalize TXT/SPF decimal escape sequences (e.g. `\239`) to raw bytes for comparison
 - `--on-error`: batch behavior on API error (continue or stop)
@@ -94,7 +95,11 @@ async def run():
         print(f"Migration completed: {result['migrator_action']}")
         print(f"Changes applied: {len(result['changes'])}")
     except PowerDNSAPIError as exc:
-        print(f"API error: {exc.status} {exc.body}")
+        print(
+            f"API error: {exc.status} {exc.body} "
+            f"(retries={exc.retries_attempted}, "
+            f"timeout retries={exc.timeout_retries_attempted})"
+        )
     except PowerDNSConnectionError as exc:
         print(f"Connection error: {exc.cause}")
     except PowerDNSResponseError as exc:
@@ -107,6 +112,12 @@ async def run():
 
 asyncio.run(run())
 ```
+
+HTTP failures expose `retries_attempted` and `timeout_retries_attempted` on
+`PowerDNSAPIError`. For example, a `409` with `timeout_retries_attempted=1`
+followed one timeout retry. `PowerDNSConnectionError` exposes the same counts.
+Both counts are zero when the first attempt fails without a retry; a retry
+after a `500` increases only `retries_attempted`.
 
 ### PowerDNSConnection Arguments
 
@@ -124,10 +135,11 @@ asyncio.run(run())
 | `source` | `PowerDNSConnection` | *required* | Source PowerDNS connection config |
 | `target` | `PowerDNSConnection` | *required* | Target PowerDNS connection config |
 | `timeout` | `float` | `10.0` | HTTP timeout in seconds |
-| `retries` | `int` | `3` | Retry count for transient API errors |
+| `retries` | `int` | `3` | Retry count for transient HTTP responses and non-POST transport failures |
 | `retry_backoff` | `float` | `0.5` | Base backoff seconds between retries |
 | `retry_max_backoff` | `float` | `5.0` | Maximum backoff seconds between retries |
 | `retry_jitter` | `float` | `0.1` | Max random jitter seconds added to backoff |
+| `retry_create_timeouts` | `bool` | `False` | Retry zone creation after timeouts |
 | `ignore_soa_serial` | `bool` | `False` | Ignore SOA serial changes and keep target serial |
 | `normalize_txt_escapes` | `bool` | `False` | Normalize TXT/SPF decimal escape sequences to raw bytes for comparison |
 

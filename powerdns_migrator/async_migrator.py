@@ -28,6 +28,7 @@ class AsyncZoneMigrator:
         retry_backoff: Base backoff between retries in seconds (default: ``0.5``).
         retry_max_backoff: Maximum backoff in seconds (default: ``5.0``).
         retry_jitter: Maximum random jitter added to backoff (default: ``0.1``).
+        retry_create_timeouts: Retry zone creation after timeouts (default: ``False``).
         ignore_soa_serial: When ``True``, the SOA serial is excluded from
             diff comparisons and the target serial is preserved on write.
         normalize_txt_escapes: When ``True``, decimal escape sequences in
@@ -46,6 +47,7 @@ class AsyncZoneMigrator:
         retry_jitter: float = 0.1,
         ignore_soa_serial: bool = False,
         normalize_txt_escapes: bool = False,
+        retry_create_timeouts: bool = False,
     ):
         self.ignore_soa_serial = ignore_soa_serial
         self.normalize_txt_escapes = normalize_txt_escapes
@@ -59,6 +61,7 @@ class AsyncZoneMigrator:
                 retry_backoff=retry_backoff,
                 retry_max_backoff=retry_max_backoff,
                 retry_jitter=retry_jitter,
+                retry_create_timeouts=retry_create_timeouts,
             )
         )
         self.target_client = (
@@ -71,6 +74,7 @@ class AsyncZoneMigrator:
                 retry_backoff=retry_backoff,
                 retry_max_backoff=retry_max_backoff,
                 retry_jitter=retry_jitter,
+                retry_create_timeouts=retry_create_timeouts,
             )
         )
 
@@ -109,6 +113,7 @@ class AsyncZoneMigrator:
             PowerDNSAPIError: Source or target API returned an HTTP error.
             PowerDNSConnectionError: Network failure communicating with source
                 or target after all retries.
+            PowerDNSResponseError: Source or target returned unusable JSON.
         """
         zone = normalize_zone_name(zone_name)
         source_zone = await self.source_client.get_zone(zone)
