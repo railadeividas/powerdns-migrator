@@ -89,11 +89,13 @@ target = PowerDNSConnection(
 
 
 async def run():
-    migrator = AsyncZoneMigrator(source, target)
     try:
-        result = await migrator.migrate("example.com.", recreate=True, dry_run=False)
-        print(f"Migration completed: {result['migrator_action']}")
-        print(f"Changes applied: {len(result['changes'])}")
+        async with AsyncZoneMigrator(source, target) as migrator:
+            result = await migrator.migrate(
+                "example.com.", recreate=True, dry_run=False
+            )
+            print(f"Migration completed: {result['migrator_action']}")
+            print(f"Changes applied: {len(result['changes'])}")
     except PowerDNSAPIError as exc:
         print(
             f"API error: {exc.status} {exc.body} "
@@ -106,12 +108,19 @@ async def run():
         print(f"Invalid API response: {exc.detail}")
     except PowerDNSMigratorError as exc:
         print(f"Migration error: {exc}")
-    finally:
-        await migrator.close()
 
 
 asyncio.run(run())
 ```
+
+The client and migrator support `async with` to close the sessions they create.
+When you pass existing `AsyncPowerDNSClient` instances to a migrator, you retain
+ownership and must close those clients yourself. Transient HTTP responses,
+including `500`, use the configured retries. A `POST /zones` transport failure
+is not retried automatically. Set `retry_create_timeouts=True` on the client or
+migrator (or use `--retry-create-timeouts` in the CLI) to retry creation after
+timeouts. A timed-out first attempt may have created the zone, so a retry can
+return `409`. Other POST transport failures are not retried.
 
 HTTP failures expose `retries_attempted` and `timeout_retries_attempted` on
 `PowerDNSAPIError`. For example, a `409` with `timeout_retries_attempted=1`

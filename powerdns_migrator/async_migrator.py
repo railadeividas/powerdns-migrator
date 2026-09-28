@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Self
 
 from .async_client import AsyncPowerDNSClient
 from .config import PowerDNSConnection
@@ -51,6 +51,8 @@ class AsyncZoneMigrator:
     ):
         self.ignore_soa_serial = ignore_soa_serial
         self.normalize_txt_escapes = normalize_txt_escapes
+        self._owns_source = not isinstance(source, AsyncPowerDNSClient)
+        self._owns_target = not isinstance(target, AsyncPowerDNSClient)
         self.source_client = (
             source
             if isinstance(source, AsyncPowerDNSClient)
@@ -79,10 +81,18 @@ class AsyncZoneMigrator:
         )
 
     async def close(self) -> None:
-        if isinstance(self.source_client, AsyncPowerDNSClient):
-            await self.source_client.close()
-        if isinstance(self.target_client, AsyncPowerDNSClient):
-            await self.target_client.close()
+        try:
+            if self._owns_source:
+                await self.source_client.close()
+        finally:
+            if self._owns_target:
+                await self.target_client.close()
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        await self.close()
 
     async def migrate(
         self, zone_name: str, recreate: bool = False, dry_run: bool = False

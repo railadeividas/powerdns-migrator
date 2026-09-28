@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import random
-from typing import Any, cast
+from typing import Any, Self, cast
 
 import aiohttp
 
@@ -69,6 +69,12 @@ class AsyncPowerDNSClient:
     async def close(self) -> None:
         await self.client.close()
 
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        await self.close()
+
     async def _request_json(self, method: str, path: str, **kwargs: Any) -> Any:
         url = self.connection.endpoint(path)
         last_error: Exception | None = None
@@ -76,7 +82,10 @@ class AsyncPowerDNSClient:
         for attempt in range(self.retries + 1):
             try:
                 async with self.client.request(method, url, **kwargs) as resp:
-                    if self._should_retry_status(resp.status) and attempt < self.retries:
+                    if (
+                        self._should_retry_status(resp.status)
+                        and attempt < self.retries
+                    ):
                         delay = self._retry_delay(attempt, resp)
                         logger.debug(
                             "Retrying %s %s in %.2fs (attempt %d/%d)",
@@ -195,17 +204,6 @@ class AsyncPowerDNSClient:
             retries_attempted=self.retries,
             timeout_retries_attempted=timeout_retries_attempted,
         ) from last_error
-
-    def _expect_json_type(
-        self, value: Any, expected: type, method: str, path: str
-    ) -> Any:
-        if not isinstance(value, expected):
-            raise PowerDNSResponseError(
-                method=method,
-                url=self.connection.endpoint(path),
-                detail=f"expected a JSON {expected.__name__}",
-            )
-        return value
 
     def _expect_json_type(
         self, value: Any, expected: type, method: str, path: str
