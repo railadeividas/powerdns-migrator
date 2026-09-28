@@ -372,7 +372,6 @@
           <label><input id="m_dryrun" type="checkbox"> Dry Run</label>
           <label><input id="m_recreate" type="checkbox"> Recreate</label>
           <label><input id="m_soa" type="checkbox"> Ignore SOA Serial</label>
-          <label><input id="m_cname" type="checkbox"> Auto-fix CNAME Conflicts</label>
           <label><input id="m_txt" type="checkbox"> Normalize TXT Escapes</label>
         </div>
         <div class="row">
@@ -484,8 +483,6 @@
           <label><input id="cli_dryrun" type="checkbox"> Dry Run</label>
           <label><input id="cli_recreate" type="checkbox"> Recreate</label>
           <label><input id="cli_soa" type="checkbox"> Ignore SOA Serial</label>
-          <label><input id="cli_cname" type="checkbox"> Auto-fix CNAME</label>
-          <label><input id="cli_dcname" type="checkbox"> Auto-fix Double CNAME</label>
           <label><input id="cli_txt" type="checkbox"> Normalize TXT</label>
         </div>
         <div class="row">
@@ -639,7 +636,6 @@
       dry_run: cb('m_dryrun'),
       recreate: cb('m_recreate'),
       ignore_soa_serial: cb('m_soa'),
-      auto_fix_cname_conflicts: cb('m_cname'),
       normalize_txt_escapes: cb('m_txt'),
       timeout: parseFloat(v('m_timeout')) || 10.0,
       retries: parseInt(v('m_retries')) || 3,
@@ -709,8 +705,6 @@
       dry_run:                       cb('cli_dryrun'),
       recreate:                      cb('cli_recreate'),
       ignore_soa_serial:             cb('cli_soa'),
-      auto_fix_cname_conflicts:      cb('cli_cname'),
-      auto_fix_double_cname_conflicts: cb('cli_dcname'),
       normalize_txt_escapes:         cb('cli_txt'),
       on_error:  v('cli_on_error'),
       concurrency: parseInt(v('cli_concurrency')) || 10,
