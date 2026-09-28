@@ -68,12 +68,13 @@ Key flags:
 ```python
 import asyncio
 
-from powerdns_migrator.async_migrator import AsyncZoneMigrator
-from powerdns_migrator.config import PowerDNSConnection
-from powerdns_migrator.errors import (
+from powerdns_migrator import (
+    AsyncZoneMigrator,
+    PowerDNSConnection,
     PowerDNSAPIError,
     PowerDNSConnectionError,
     PowerDNSMigratorError,
+    PowerDNSResponseError,
 )
 
 source = PowerDNSConnection(
@@ -96,6 +97,8 @@ async def run():
         print(f"API error: {exc.status} {exc.body}")
     except PowerDNSConnectionError as exc:
         print(f"Connection error: {exc.cause}")
+    except PowerDNSResponseError as exc:
+        print(f"Invalid API response: {exc.detail}")
     except PowerDNSMigratorError as exc:
         print(f"Migration error: {exc}")
     finally:

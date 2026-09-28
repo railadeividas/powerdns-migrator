@@ -8,6 +8,7 @@ from .errors import (
     PowerDNSAPIError,
     PowerDNSConnectionError,
     PowerDNSMigratorError,
+    PowerDNSResponseError,
 )
 
 __all__ = [
@@ -18,4 +19,5 @@ __all__ = [
     "PowerDNSConnection",
     "PowerDNSConnectionError",
     "PowerDNSMigratorError",
+    "PowerDNSResponseError",
 ]

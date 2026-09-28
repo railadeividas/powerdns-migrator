@@ -67,6 +67,22 @@ class PowerDNSConnectionError(PowerDNSMigratorError):
         )
 
 
+class PowerDNSResponseError(PowerDNSMigratorError):
+    """The API returned a successful HTTP status with an unusable JSON body.
+
+    Attributes:
+        method: HTTP method of the request.
+        url: Full request URL.
+        detail: Why the response cannot be used.
+    """
+
+    def __init__(self, *, method: str, url: str, detail: str) -> None:
+        self.method = method
+        self.url = url
+        self.detail = detail
+        super().__init__(f"Invalid PowerDNS response: {method} {url}: {detail}")
+
+
 class MigratorConfigError(PowerDNSMigratorError):
     """A configuration or validation error in the migrator.
 

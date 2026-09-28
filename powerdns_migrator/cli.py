@@ -15,6 +15,7 @@ from .errors import (
     PowerDNSAPIError,
     PowerDNSConnectionError,
     PowerDNSMigratorError,
+    PowerDNSResponseError,
 )
 
 logger = logging.getLogger(__name__)
@@ -186,6 +187,9 @@ async def _run_single(args: argparse.Namespace) -> int:
         return 1
     except PowerDNSAPIError as exc:
         logger.error("API error for zone %s: %s", args.zone, exc)
+        return 1
+    except PowerDNSResponseError as exc:
+        logger.error("Invalid API response for zone %s: %s", args.zone, exc)
         return 1
     finally:
         try:
