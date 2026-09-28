@@ -1,11 +1,23 @@
 from __future__ import annotations
 
+import functools
+from typing import Any
+
 
 class PowerDNSMigratorError(Exception):
     """Base exception for all powerdns-migrator errors.
 
     Catch this to handle any error originating from this package.
     """
+
+    def __reduce__(self) -> tuple[Any, tuple[Any, ...]]:
+        # Subclasses take keyword-only constructor args and store each one
+        # as a same-named instance attribute, so __dict__ already holds the
+        # exact kwargs needed to reconstruct the instance. This makes these
+        # exceptions picklable (e.g. for multiprocessing/Celery) without
+        # relying on the default Exception.__reduce__, which replays
+        # self.args positionally and doesn't match these signatures.
+        return (functools.partial(self.__class__, **self.__dict__), ())
 
 
 class PowerDNSAPIError(PowerDNSMigratorError):
