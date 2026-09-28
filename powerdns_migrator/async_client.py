@@ -3,17 +3,34 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-from typing import Any, Dict, List, cast
+from typing import Any, cast
 
 import aiohttp
 
+from .config import PowerDNSConnection
 from .errors import PowerDNSAPIError, PowerDNSConnectionError
 from .utils import normalize_zone_name
-from .config import PowerDNSConnection
+
+logger = logging.getLogger(__name__)
 
 
 class AsyncPowerDNSClient:
-    """Async PowerDNS API helper."""
+    """Async HTTP client for the PowerDNS Authoritative API.
+
+    Wraps ``aiohttp`` to provide typed methods for every API operation used
+    during zone migration.  All network errors are converted to either
+    :class:`~powerdns_migrator.errors.PowerDNSAPIError` (HTTP 4xx/5xx) or
+    :class:`~powerdns_migrator.errors.PowerDNSConnectionError` (transport
+    failure) after the configured number of retries is exhausted.
+
+    Args:
+        connection: Connection configuration (URL, API key, server ID, SSL).
+        timeout: HTTP request timeout in seconds (default: ``10.0``).
+        retries: Number of retry attempts for transient failures (default: ``3``).
+        retry_backoff: Base backoff duration in seconds (default: ``0.5``).
+        retry_max_backoff: Maximum backoff duration in seconds (default: ``5.0``).
+        retry_jitter: Maximum random jitter added to backoff in seconds (default: ``0.1``).
+    """
 
     def __init__(
         self,
@@ -55,7 +72,7 @@ class AsyncPowerDNSClient:
                         and attempt < self.retries
                     ):
                         delay = self._retry_delay(attempt, resp)
-                        logging.debug(
+                        logger.debug(
                             "Retrying %s %s in %.2fs (attempt %d/%d)",
                             method,
                             url,
@@ -80,7 +97,7 @@ class AsyncPowerDNSClient:
                 if attempt >= self.retries:
                     break
                 delay = self._retry_delay(attempt)
-                logging.debug(
+                logger.debug(
                     "Retrying %s %s in %.2fs (attempt %d/%d) after error: %s",
                     method,
                     url,
@@ -108,7 +125,7 @@ class AsyncPowerDNSClient:
                         and attempt < self.retries
                     ):
                         delay = self._retry_delay(attempt, resp)
-                        logging.debug(
+                        logger.debug(
                             "Retrying %s %s in %.2fs (attempt %d/%d)",
                             method,
                             url,
@@ -134,7 +151,7 @@ class AsyncPowerDNSClient:
                 if attempt >= self.retries:
                     break
                 delay = self._retry_delay(attempt)
-                logging.debug(
+                logger.debug(
                     "Retrying %s %s in %.2fs after error: %s", method, url, delay, exc
                 )
                 await asyncio.sleep(delay)
@@ -145,14 +162,47 @@ class AsyncPowerDNSClient:
             retries_attempted=self.retries,
         )
 
-    async def list_zones(self) -> List[Dict[str, Any]]:
-        return cast(List[Dict[str, Any]], await self._request_json("GET", "/zones"))
+    async def list_zones(self) -> list[dict[str, Any]]:
+        """List all zones on the server.
 
-    async def get_zone(self, zone_name: str) -> Dict[str, Any]:
+        Returns:
+            List of zone summary dicts as returned by ``GET /zones``.
+
+        Raises:
+            PowerDNSAPIError: Server responded with 4xx/5xx.
+            PowerDNSConnectionError: Network failure after all retries.
+        """
+        return cast(list[dict[str, Any]], await self._request_json("GET", "/zones"))
+
+    async def get_zone(self, zone_name: str) -> dict[str, Any]:
+        """Fetch a zone including all RRSets.
+
+        Args:
+            zone_name: Zone name with or without trailing dot.
+
+        Returns:
+            Full zone dict including ``rrsets`` as returned by ``GET /zones/{zone}``.
+
+        Raises:
+            PowerDNSAPIError: Server responded with 4xx/5xx (including 404 if not found).
+            PowerDNSConnectionError: Network failure after all retries.
+        """
         zone = normalize_zone_name(zone_name)
-        return cast(Dict[str, Any], await self._request_json("GET", f"/zones/{zone}"))
+        return cast(dict[str, Any], await self._request_json("GET", f"/zones/{zone}"))
 
-    async def zone_exists(self, zone_name: str) -> Dict[str, Any] | None:
+    async def zone_exists(self, zone_name: str) -> dict[str, Any] | None:
+        """Fetch a zone, returning ``None`` if it does not exist.
+
+        Args:
+            zone_name: Zone name with or without trailing dot.
+
+        Returns:
+            Full zone dict if the zone exists, ``None`` if the server returns 404.
+
+        Raises:
+            PowerDNSAPIError: Server responded with a non-404 error status.
+            PowerDNSConnectionError: Network failure after all retries.
+        """
         try:
             return await self.get_zone(zone_name)
         except PowerDNSAPIError as exc:
@@ -161,18 +211,51 @@ class AsyncPowerDNSClient:
             raise
 
     async def delete_zone(self, zone_name: str) -> None:
+        """Delete a zone from the server.
+
+        Args:
+            zone_name: Zone name with or without trailing dot.
+
+        Raises:
+            PowerDNSAPIError: Server responded with 4xx/5xx.
+            PowerDNSConnectionError: Network failure after all retries.
+        """
         zone = normalize_zone_name(zone_name)
         await self._request_ok("DELETE", f"/zones/{zone}")
 
-    async def create_zone(self, zone_payload: Dict[str, Any]) -> Dict[str, Any]:
+    async def create_zone(self, zone_payload: dict[str, Any]) -> dict[str, Any]:
+        """Create a new zone on the server.
+
+        Args:
+            zone_payload: Zone creation payload as a dict.  Must include at
+                minimum ``name`` and ``kind``; typically also includes ``rrsets``.
+
+        Returns:
+            The created zone dict as returned by ``POST /zones``.
+
+        Raises:
+            PowerDNSAPIError: Server responded with 4xx/5xx.
+            PowerDNSConnectionError: Network failure after all retries.
+        """
         return cast(
-            Dict[str, Any],
+            dict[str, Any],
             await self._request_json("POST", "/zones", json=zone_payload),
         )
 
     async def patch_zone_rrsets(
-        self, zone_name: str, rrsets: list[Dict[str, Any]]
+        self, zone_name: str, rrsets: list[dict[str, Any]]
     ) -> None:
+        """Apply RRSet changes to an existing zone.
+
+        Args:
+            zone_name: Zone name with or without trailing dot.
+            rrsets: List of RRSet change dicts.  Each entry must include a
+                ``changetype`` field (``"REPLACE"`` or ``"DELETE"``).
+
+        Raises:
+            PowerDNSAPIError: Server responded with 4xx/5xx.
+            PowerDNSConnectionError: Network failure after all retries.
+        """
         zone = normalize_zone_name(zone_name)
         payload = {"rrsets": rrsets}
         await self._request_ok("PATCH", f"/zones/{zone}", json=payload)

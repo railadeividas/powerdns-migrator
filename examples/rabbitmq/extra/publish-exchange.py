@@ -3,10 +3,12 @@
 # pip install aio-pika
 
 import asyncio
-import os
 import logging
+import os
 
 import aio_pika
+
+logger = logging.getLogger(__name__)
 
 RABBIT_URL = os.getenv("RABBIT_URL", "amqp://admin:pass2login@localhost/")
 EXCHANGE_NAME = os.getenv("EXCHANGE_NAME", "powerdns-migrator")
@@ -37,7 +39,7 @@ async def main() -> None:
     # Declare queue and bind it to the exchange
     queue = await channel.declare_queue(QUEUE_NAME, durable=True)
     await queue.bind(exchange, routing_key=ROUTING_KEY)
-    logging.info(
+    logger.info(
         "Queue '%s' bound to exchange '%s' with routing_key '%s'",
         QUEUE_NAME,
         EXCHANGE_NAME,
@@ -50,9 +52,9 @@ async def main() -> None:
             delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
         )
         await exchange.publish(message, routing_key=ROUTING_KEY)
-        logging.info("Published zone: %s (routing_key: %s)", zone, ROUTING_KEY)
+        logger.info("Published zone: %s (routing_key: %s)", zone, ROUTING_KEY)
 
-    logging.info("Published %d zones to exchange '%s'", len(TEST_ZONES), EXCHANGE_NAME)
+    logger.info("Published %d zones to exchange '%s'", len(TEST_ZONES), EXCHANGE_NAME)
 
     await channel.close()
     await connection.close()

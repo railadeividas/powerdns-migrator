@@ -3,8 +3,8 @@
 # pip install powerdns-migrator aiomysql
 
 import asyncio
-import os
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 
@@ -13,6 +13,8 @@ import aiomysql
 from powerdns_migrator.async_migrator import AsyncZoneMigrator
 from powerdns_migrator.config import PowerDNSConnection
 from powerdns_migrator.errors import PowerDNSMigratorError
+
+logger = logging.getLogger(__name__)
 
 # MySQL configuration
 MYSQL_HOST = os.getenv("MYSQL_HOST", "localhost")
@@ -116,11 +118,10 @@ def build_migrator() -> AsyncZoneMigrator:
 
 async def get_total_domains(pool: aiomysql.Pool) -> int:
     """Get total count of domains."""
-    async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute("SELECT COUNT(*) FROM domains")
-            row = await cur.fetchone()
-            return row[0] if row else 0
+    async with pool.acquire() as conn, conn.cursor() as cur:
+        await cur.execute("SELECT COUNT(*) FROM domains")
+        row = await cur.fetchone()
+        return row[0] if row else 0
 
 
 async def fetch_domains_producer(
@@ -132,26 +133,25 @@ async def fetch_domains_producer(
     offset = 0
 
     while not stats.stop_requested:
-        async with pool.acquire() as conn:
-            async with conn.cursor() as cur:
-                await cur.execute(
-                    "SELECT name FROM domains ORDER BY id LIMIT %s OFFSET %s",
-                    (BATCH_SIZE, offset),
-                )
-                rows = await cur.fetchall()
+        async with pool.acquire() as conn, conn.cursor() as cur:
+            await cur.execute(
+                "SELECT name FROM domains ORDER BY id LIMIT %s OFFSET %s",
+                (BATCH_SIZE, offset),
+            )
+            rows = await cur.fetchall()
 
-                if not rows:
+            if not rows:
+                break
+
+            for row in rows:
+                if stats.stop_requested:
                     break
+                await queue.put(row[0])
 
-                for row in rows:
-                    if stats.stop_requested:
-                        break
-                    await queue.put(row[0])
-
-                offset += len(rows)
-                logging.debug(
-                    "Fetched batch: offset=%d, count=%d", offset - len(rows), len(rows)
-                )
+            offset += len(rows)
+            logger.debug(
+                "Fetched batch: offset=%d, count=%d", offset - len(rows), len(rows)
+            )
 
     # Signal workers to stop
     for _ in range(CONCURRENCY):
@@ -187,10 +187,10 @@ async def migrate_worker(
 
             if action == "skipped":
                 stats.skipped += 1
-                logging.debug("Skipped zone: %s (no changes)", zone)
+                logger.debug("Skipped zone: %s (no changes)", zone)
             else:
                 stats.success += 1
-                logging.debug(
+                logger.debug(
                     "Migrated zone: %s | action: %s | changes: %d",
                     zone,
                     action,
@@ -199,7 +199,7 @@ async def migrate_worker(
 
         except PowerDNSMigratorError as exc:
             stats.failed += 1
-            logging.error("Zone %s failed: %s", zone, exc)
+            logger.error("Zone %s failed: %s", zone, exc)
             if ON_ERROR == "stop":
                 stats.stop_requested = True
 
@@ -221,7 +221,7 @@ async def progress_reporter(stats: MigrationStats) -> None:
                 else "calculating..."
             )
 
-            logging.info(
+            logger.info(
                 "Progress: %d/%d (%.1f%%) | success=%d failed=%d skipped=%d | rate=%.1f/s | ETA: %s",
                 stats.processed,
                 stats.total,
@@ -241,7 +241,7 @@ async def main() -> None:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    logging.info(
+    logger.info(
         "Connecting to MySQL at %s:%d/%s", MYSQL_HOST, MYSQL_PORT, MYSQL_DATABASE
     )
 
@@ -258,7 +258,7 @@ async def main() -> None:
 
     try:
         total = await get_total_domains(pool)
-        logging.info(
+        logger.info(
             "Found %d domains to migrate (batch_size=%d, concurrency=%d)",
             total,
             BATCH_SIZE,
@@ -266,7 +266,7 @@ async def main() -> None:
         )
 
         if total == 0:
-            logging.warning("No domains found in database")
+            logger.warning("No domains found in database")
             return
 
         stats = MigrationStats(total=total)
@@ -301,7 +301,7 @@ async def main() -> None:
             await migrator.close()
 
         elapsed = time.time() - stats.start_time
-        logging.info(
+        logger.info(
             "Migration complete in %.1fs: total=%d success=%d failed=%d skipped=%d (%.1f zones/s)",
             elapsed,
             stats.total,

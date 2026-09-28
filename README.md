@@ -73,7 +73,11 @@ import asyncio
 
 from powerdns_migrator.async_migrator import AsyncZoneMigrator
 from powerdns_migrator.config import PowerDNSConnection
-from powerdns_migrator.errors import PowerDNSAPIError, PowerDNSConnectionError, PowerDNSMigratorError
+from powerdns_migrator.errors import (
+    PowerDNSAPIError,
+    PowerDNSConnectionError,
+    PowerDNSMigratorError,
+)
 
 source = PowerDNSConnection(
     base_url="https://pdns-source:8081",
@@ -83,6 +87,7 @@ target = PowerDNSConnection(
     base_url="https://pdns-target:8081",
     api_key="TARGET_KEY",
 )
+
 
 async def run():
     migrator = AsyncZoneMigrator(source, target)
@@ -98,6 +103,7 @@ async def run():
         print(f"Migration error: {exc}")
     finally:
         await migrator.close()
+
 
 asyncio.run(run())
 ```
@@ -141,10 +147,10 @@ The `migrate()` method returns a dictionary with detailed information about the 
 
 ```python
 {
-    "source_zone": {...},        # Sanitized zone data from source
-    "target_zone": {...},        # Zone data from target (empty in dry-run mode)
-    "changes": {...},            # RRSet changes that were/would be applied
-    "migrator_action": "..."     # Action taken: CREATE_ZONE, PATCH_ZONE, RECREATE_ZONE, or NOOP
+    "source_zone": {...},  # Sanitized zone data from source
+    "target_zone": {...},  # Zone data from target (empty in dry-run mode)
+    "changes": {...},  # RRSet changes that were/would be applied
+    "migrator_action": "...",  # Action taken: CREATE_ZONE, PATCH_ZONE, RECREATE_ZONE, or NOOP
 }
 ```
 

@@ -7,7 +7,6 @@ import logging
 import sys
 import time
 from pathlib import Path
-from typing import Optional
 
 from .async_migrator import AsyncZoneMigrator
 from .config import PowerDNSConnection
@@ -18,8 +17,10 @@ from .errors import (
     PowerDNSMigratorError,
 )
 
+logger = logging.getLogger(__name__)
 
-def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     version = importlib.metadata.version("powerdns-migrator")
     parser = argparse.ArgumentParser(
         description="Migrate a PowerDNS zone between two servers."
@@ -193,10 +194,10 @@ async def _run_single(args: argparse.Namespace) -> int:
     try:
         await migrator.migrate(args.zone, recreate=args.recreate, dry_run=args.dry_run)
     except PowerDNSConnectionError as exc:
-        logging.error("Connection failed for zone %s: %s", args.zone, exc)
+        logger.error("Connection failed for zone %s: %s", args.zone, exc)
         return 1
     except PowerDNSAPIError as exc:
-        logging.error("API error for zone %s: %s", args.zone, exc)
+        logger.error("API error for zone %s: %s", args.zone, exc)
         return 1
     finally:
         try:
@@ -205,9 +206,9 @@ async def _run_single(args: argparse.Namespace) -> int:
             pass
 
     if args.dry_run:
-        logging.info("Zone %s dry run successful", args.zone)
+        logger.info("Zone %s dry run successful", args.zone)
     else:
-        logging.info("Zone %s migration successful", args.zone)
+        logger.info("Zone %s migration successful", args.zone)
     return 0
 
 
@@ -248,14 +249,14 @@ async def _run_batch(args: argparse.Namespace) -> int:
                 queue.task_done()
                 continue
             try:
-                logging.debug("Processing zone %s", zone)
+                logger.debug("Processing zone %s", zone)
                 await migrator.migrate(
                     zone, recreate=args.recreate, dry_run=args.dry_run
                 )
                 async with counter_lock:
                     success += 1
             except PowerDNSMigratorError as exc:
-                logging.error("Zone %s failed: %s", zone, exc)
+                logger.error("Zone %s failed: %s", zone, exc)
                 async with counter_lock:
                     failed += 1
                 if args.on_error == "stop":
@@ -280,7 +281,7 @@ async def _run_batch(args: argparse.Namespace) -> int:
             async with counter_lock:
                 processed = success + failed
                 elapsed = time.monotonic() - start_time
-                logging.info(
+                logger.info(
                     "Progress: processed=%d success=%d failed=%d elapsed=%.1fs",
                     processed,
                     success,
@@ -298,28 +299,28 @@ async def _run_batch(args: argparse.Namespace) -> int:
     cancelled_workers = False
 
     try:
-        with zones_path.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                if stop_event.is_set():
-                    break
-                zone = line.strip()
-                if not zone or zone.startswith("#"):
-                    continue
-                try:
-                    await queue.put(zone)
-                except asyncio.CancelledError:
-                    logging.warning(
-                        "Keyboard interrupt received; stopping intake and finishing queued work."
-                    )
-                    stop_event.set()
-                    break
+        zones_text = await asyncio.to_thread(zones_path.read_text, encoding="utf-8")
+        for line in zones_text.splitlines():
+            if stop_event.is_set():
+                break
+            zone = line.strip()
+            if not zone or zone.startswith("#"):
+                continue
+            try:
+                await queue.put(zone)
+            except asyncio.CancelledError:
+                logger.warning(
+                    "Keyboard interrupt received; stopping intake and finishing queued work."
+                )
+                stop_event.set()
+                break
     except KeyboardInterrupt:
-        logging.warning(
+        logger.warning(
             "Keyboard interrupt received; stopping intake and finishing queued work."
         )
         stop_event.set()
     except asyncio.CancelledError:
-        logging.warning("Interrupted; stopping intake and finishing queued work.")
+        logger.warning("Interrupted; stopping intake and finishing queued work.")
         stop_event.set()
     finally:
         if stop_event.is_set() and args.on_error == "stop":
@@ -342,7 +343,7 @@ async def _run_batch(args: argparse.Namespace) -> int:
             else:
                 await queue.join()
         except asyncio.TimeoutError:
-            logging.warning("Graceful timeout reached; cancelling remaining tasks.")
+            logger.warning("Graceful timeout reached; cancelling remaining tasks.")
             for task in workers:
                 task.cancel()
         except asyncio.CancelledError:
@@ -363,17 +364,17 @@ async def _run_batch(args: argparse.Namespace) -> int:
         except asyncio.CancelledError:
             pass
 
-    logging.info("Batch complete. Success: %d Failed: %d", success, failed)
+    logger.info("Batch complete. Success: %d Failed: %d", success, failed)
     return 1 if failed else 0
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     level_name = args.log_level or ("DEBUG" if args.verbose else "INFO")
     level = getattr(logging, level_name)
 
-    logger = logging.getLogger()
-    logger.setLevel(level)
+    root_logger = logging.getLogger()
+    root_logger.setLevel(level)
     formatter = logging.Formatter("[%(levelname)s] %(message)s")
 
     stdout_handler = logging.StreamHandler(sys.stdout)
@@ -385,19 +386,19 @@ def main(argv: Optional[list[str]] = None) -> int:
     stderr_handler.setLevel(logging.ERROR)
     stderr_handler.setFormatter(formatter)
 
-    logger.handlers.clear()
-    logger.addHandler(stdout_handler)
-    logger.addHandler(stderr_handler)
+    root_logger.handlers.clear()
+    root_logger.addHandler(stdout_handler)
+    root_logger.addHandler(stderr_handler)
 
     try:
         if args.zones_file:
             return asyncio.run(_run_batch(args))
         return asyncio.run(_run_single(args))
     except MigratorConfigError as exc:
-        logging.error("%s", exc)
+        logger.error("%s", exc)
         return 2
     except KeyboardInterrupt:
-        logging.warning("Interrupted by user.")
+        logger.warning("Interrupted by user.")
         return 130
 
 
