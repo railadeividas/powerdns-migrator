@@ -15,6 +15,7 @@ from .errors import (
     PowerDNSAPIError,
     PowerDNSConnectionError,
     PowerDNSMigratorError,
+    PowerDNSResponseError,
 )
 
 logger = logging.getLogger(__name__)
@@ -102,6 +103,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Max random jitter seconds added to backoff",
     )
     parser.add_argument(
+        "--retry-create-timeouts",
+        action="store_true",
+        help="Retry zone creation after timeouts (may return 409 if already created)",
+    )
+    parser.add_argument(
         "--ignore-soa-serial",
         action="store_true",
         help="Ignore SOA serial changes and keep target serial",
@@ -176,6 +182,7 @@ async def _run_single(args: argparse.Namespace) -> int:
         retry_backoff=args.retry_backoff,
         retry_max_backoff=args.retry_max_backoff,
         retry_jitter=args.retry_jitter,
+        retry_create_timeouts=args.retry_create_timeouts,
         ignore_soa_serial=args.ignore_soa_serial,
         normalize_txt_escapes=args.normalize_txt_escapes,
     )
@@ -186,6 +193,9 @@ async def _run_single(args: argparse.Namespace) -> int:
         return 1
     except PowerDNSAPIError as exc:
         logger.error("API error for zone %s: %s", args.zone, exc)
+        return 1
+    except PowerDNSResponseError as exc:
+        logger.error("Invalid API response for zone %s: %s", args.zone, exc)
         return 1
     finally:
         try:
@@ -210,6 +220,7 @@ async def _run_batch(args: argparse.Namespace) -> int:
         retry_backoff=args.retry_backoff,
         retry_max_backoff=args.retry_max_backoff,
         retry_jitter=args.retry_jitter,
+        retry_create_timeouts=args.retry_create_timeouts,
         ignore_soa_serial=args.ignore_soa_serial,
         normalize_txt_escapes=args.normalize_txt_escapes,
     )

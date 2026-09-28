@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
-from typing import Any
+from typing import Any, Self
 
 from .async_client import AsyncPowerDNSClient
 from .config import PowerDNSConnection
@@ -28,6 +29,7 @@ class AsyncZoneMigrator:
         retry_backoff: Base backoff between retries in seconds (default: ``0.5``).
         retry_max_backoff: Maximum backoff in seconds (default: ``5.0``).
         retry_jitter: Maximum random jitter added to backoff (default: ``0.1``).
+        retry_create_timeouts: Retry zone creation after timeouts (default: ``False``).
         ignore_soa_serial: When ``True``, the SOA serial is excluded from
             diff comparisons and the target serial is preserved on write.
         normalize_txt_escapes: When ``True``, decimal escape sequences in
@@ -46,9 +48,12 @@ class AsyncZoneMigrator:
         retry_jitter: float = 0.1,
         ignore_soa_serial: bool = False,
         normalize_txt_escapes: bool = False,
+        retry_create_timeouts: bool = False,
     ):
         self.ignore_soa_serial = ignore_soa_serial
         self.normalize_txt_escapes = normalize_txt_escapes
+        self._owns_source = not isinstance(source, AsyncPowerDNSClient)
+        self._owns_target = not isinstance(target, AsyncPowerDNSClient)
         self.source_client = (
             source
             if isinstance(source, AsyncPowerDNSClient)
@@ -59,6 +64,7 @@ class AsyncZoneMigrator:
                 retry_backoff=retry_backoff,
                 retry_max_backoff=retry_max_backoff,
                 retry_jitter=retry_jitter,
+                retry_create_timeouts=retry_create_timeouts,
             )
         )
         self.target_client = (
@@ -71,14 +77,23 @@ class AsyncZoneMigrator:
                 retry_backoff=retry_backoff,
                 retry_max_backoff=retry_max_backoff,
                 retry_jitter=retry_jitter,
+                retry_create_timeouts=retry_create_timeouts,
             )
         )
 
     async def close(self) -> None:
-        if isinstance(self.source_client, AsyncPowerDNSClient):
-            await self.source_client.close()
-        if isinstance(self.target_client, AsyncPowerDNSClient):
-            await self.target_client.close()
+        try:
+            if self._owns_source:
+                await self.source_client.close()
+        finally:
+            if self._owns_target:
+                await self.target_client.close()
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        await self.close()
 
     async def migrate(
         self, zone_name: str, recreate: bool = False, dry_run: bool = False
@@ -109,6 +124,7 @@ class AsyncZoneMigrator:
             PowerDNSAPIError: Source or target API returned an HTTP error.
             PowerDNSConnectionError: Network failure communicating with source
                 or target after all retries.
+            PowerDNSResponseError: Source or target returned unusable JSON.
         """
         zone = normalize_zone_name(zone_name)
         source_zone = await self.source_client.get_zone(zone)
@@ -152,7 +168,7 @@ class AsyncZoneMigrator:
             return {
                 "source_zone": sanitized,
                 "target_zone": target_zone if not dry_run else {},
-                "changes": {},
+                "changes": [],
                 "migrator_action": "NOOP",
             }
 
@@ -162,7 +178,7 @@ class AsyncZoneMigrator:
         return {
             "source_zone": sanitized,
             "target_zone": created if not dry_run else {},
-            "changes": {},
+            "changes": [],
             "migrator_action": "CREATE_ZONE",
         }
 
@@ -214,7 +230,7 @@ class AsyncZoneMigrator:
 
     def _normalize_rrset(self, rrset: dict[str, Any]) -> dict[str, Any]:
         records = rrset.get("records", [])
-        normalized_records = sorted(
+        normalized_records = [
             (
                 self._normalize_record_content(
                     rrset.get("type"), record.get("content", "")
@@ -223,9 +239,10 @@ class AsyncZoneMigrator:
                 record.get("priority"),
             )
             for record in records
-        )
+        ]
+        normalized_records.sort(key=json.dumps)
         comments = rrset.get("comments") or []
-        normalized_comments = sorted(
+        normalized_comments = [
             (
                 comment.get("content", ""),
                 bool(comment.get("disabled", False)),
@@ -233,7 +250,8 @@ class AsyncZoneMigrator:
                 comment.get("modified_at"),
             )
             for comment in comments
-        )
+        ]
+        normalized_comments.sort(key=json.dumps)
         return {
             "name": normalize_zone_name(rrset["name"]),
             "type": rrset["type"],
