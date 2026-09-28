@@ -107,16 +107,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Ignore SOA serial changes and keep target serial",
     )
     parser.add_argument(
-        "--auto-fix-cname-conflicts",
-        action="store_true",
-        help="Drop non-CNAME rrsets sharing a name with a CNAME",
-    )
-    parser.add_argument(
-        "--auto-fix-double-cname-conflicts",
-        action="store_true",
-        help="Trim multi-record CNAME rrsets to a single record (last one wins)",
-    )
-    parser.add_argument(
         "--normalize-txt-escapes",
         action="store_true",
         help="Normalize TXT/SPF decimal escape sequences (e.g. \\\\239) to raw bytes for comparison",
@@ -187,8 +177,6 @@ async def _run_single(args: argparse.Namespace) -> int:
         retry_max_backoff=args.retry_max_backoff,
         retry_jitter=args.retry_jitter,
         ignore_soa_serial=args.ignore_soa_serial,
-        auto_fix_cname_conflicts=args.auto_fix_cname_conflicts,
-        auto_fix_double_cname_conflicts=args.auto_fix_double_cname_conflicts,
         normalize_txt_escapes=args.normalize_txt_escapes,
     )
     try:
@@ -223,8 +211,6 @@ async def _run_batch(args: argparse.Namespace) -> int:
         retry_max_backoff=args.retry_max_backoff,
         retry_jitter=args.retry_jitter,
         ignore_soa_serial=args.ignore_soa_serial,
-        auto_fix_cname_conflicts=args.auto_fix_cname_conflicts,
-        auto_fix_double_cname_conflicts=args.auto_fix_double_cname_conflicts,
         normalize_txt_escapes=args.normalize_txt_escapes,
     )
     zones_path = Path(args.zones_file)

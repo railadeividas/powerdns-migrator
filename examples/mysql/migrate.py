@@ -57,12 +57,6 @@ RETRY_JITTER = float(os.getenv("RETRY_JITTER", "0.1"))
 
 # Zone migration options
 IGNORE_SOA_SERIAL = os.getenv("IGNORE_SOA_SERIAL", "true").lower() == "true"
-AUTO_FIX_CNAME_CONFLICTS = (
-    os.getenv("AUTO_FIX_CNAME_CONFLICTS", "true").lower() == "true"
-)
-AUTO_FIX_DOUBLE_CNAME_CONFLICTS = (
-    os.getenv("AUTO_FIX_DOUBLE_CNAME_CONFLICTS", "true").lower() == "true"
-)
 NORMALIZE_TXT_ESCAPES = os.getenv("NORMALIZE_TXT_ESCAPES", "true").lower() == "true"
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -110,8 +104,6 @@ def build_migrator() -> AsyncZoneMigrator:
         retry_max_backoff=RETRY_MAX_BACKOFF,
         retry_jitter=RETRY_JITTER,
         ignore_soa_serial=IGNORE_SOA_SERIAL,
-        auto_fix_cname_conflicts=AUTO_FIX_CNAME_CONFLICTS,
-        auto_fix_double_cname_conflicts=AUTO_FIX_DOUBLE_CNAME_CONFLICTS,
         normalize_txt_escapes=NORMALIZE_TXT_ESCAPES,
     )
 

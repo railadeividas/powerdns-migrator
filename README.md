@@ -8,7 +8,6 @@ Python package and CLI to migrate DNS zones between PowerDNS servers using their
 - **Async & Parallel** — Batch migrate thousands of zones concurrently with configurable parallelism
 - **Smart Sync** — Detects differences and merges only changed records, or fully recreates zones
 - **Dry-Run Mode** — Preview changes before applying them to the target server
-- **Auto-Fix CNAME Conflicts** — Automatically resolve CNAME/other record conflicts at the same name
 - **Retry with Backoff** — Configurable retries with exponential backoff and jitter for transient errors
 - **TXT Escape Normalization** — Handle different TXT record encodings across backends (MySQL, etc.)
 - **Error Handling** — Choose to stop or continue on errors during batch migrations
@@ -55,8 +54,6 @@ Key flags:
 - `--retry-max-backoff`: maximum backoff seconds between retries
 - `--retry-jitter`: max random jitter seconds added to backoff
 - `--ignore-soa-serial`: ignore SOA serial changes and keep target serial
-- `--auto-fix-cname-conflicts`: auto-fix CNAME conflicts (drop other types on same name, but drop CNAME at apex)
-- `--auto-fix-double-cname-conflicts`: trim multi-record CNAME rrsets to a single record (first one wins)
 - `--normalize-txt-escapes`: normalize TXT/SPF decimal escape sequences (e.g. `\239`) to raw bytes for comparison
 - `--on-error`: batch behavior on API error (continue or stop)
 - `--zones-file`: migrate zones from a file (one per line)
@@ -129,8 +126,6 @@ asyncio.run(run())
 | `retry_max_backoff` | `float` | `5.0` | Maximum backoff seconds between retries |
 | `retry_jitter` | `float` | `0.1` | Max random jitter seconds added to backoff |
 | `ignore_soa_serial` | `bool` | `False` | Ignore SOA serial changes and keep target serial |
-| `auto_fix_cname_conflicts` | `bool` | `False` | Auto-fix CNAME conflicts (drop other types on same name, but drop CNAME at apex) |
-| `auto_fix_double_cname_conflicts` | `bool` | `False` | Trim multi-record CNAME rrsets to single record (first one wins) |
 | `normalize_txt_escapes` | `bool` | `False` | Normalize TXT/SPF decimal escape sequences to raw bytes for comparison |
 
 ### migrate() Arguments
@@ -185,7 +180,5 @@ The repository includes ready-to-use examples for common integration patterns in
 - This packages is under active development. It intentionally keeps behavior simple: it fetches the entire zone (including rrsets) from the source and recreates it on the target.
 - The migrator drops read-only fields returned by PowerDNS (`id`, `url`, `serial`, `notified_serial`, etc.).
 - For existing zones on the target, use `--recreate` to delete before recreate.
-- When `--auto-fix-cname-conflicts` is enabled, apex CNAMEs are removed and non-apex CNAMEs are kept while other rrsets with the same name are dropped.
-- When `--auto-fix-double-cname-conflicts` is enabled, multi-record CNAME rrsets are trimmed to the first record.
 - When `--normalize-txt-escapes` is enabled, TXT/SPF records with decimal escape sequences (e.g. `\239\191\189`) are normalized to raw bytes during comparison. This is useful when migrating between backends that represent non-ASCII content differently (e.g. MySQL vs LMDB).
 - Tested with PowerDNS API v1. Additional adjustments may be needed for specific setups (DNSSEC, presigned zones, custom backends, etc.).

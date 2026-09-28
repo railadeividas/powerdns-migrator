@@ -62,7 +62,6 @@ class MigrateRequest(BaseModel):
     recreate: bool = False
     dry_run: bool = False
     ignore_soa_serial: bool = False
-    auto_fix_cname_conflicts: bool = False
     normalize_txt_escapes: bool = False
     timeout: float = 10.0
     retries: int = 3
@@ -91,8 +90,6 @@ class CLIRunRequest(BaseModel):
     dry_run: bool = False
     recreate: bool = False
     ignore_soa_serial: bool = False
-    auto_fix_cname_conflicts: bool = False
-    auto_fix_double_cname_conflicts: bool = False
     normalize_txt_escapes: bool = False
     on_error: str = "continue"  # "continue" | "stop"
     concurrency: int = 10
@@ -213,7 +210,6 @@ async def api_migrate(req: MigrateRequest) -> dict[str, Any]:
         retry_max_backoff=req.retry_max_backoff,
         retry_jitter=req.retry_jitter,
         ignore_soa_serial=req.ignore_soa_serial,
-        auto_fix_cname_conflicts=req.auto_fix_cname_conflicts,
         normalize_txt_escapes=req.normalize_txt_escapes,
     )
     try:
@@ -309,10 +305,6 @@ async def api_cli_run_stream(req: CLIRunRequest) -> StreamingResponse:
         args.append("--recreate")
     if req.ignore_soa_serial:
         args.append("--ignore-soa-serial")
-    if req.auto_fix_cname_conflicts:
-        args.append("--auto-fix-cname-conflicts")
-    if req.auto_fix_double_cname_conflicts:
-        args.append("--auto-fix-double-cname-conflicts")
     if req.normalize_txt_escapes:
         args.append("--normalize-txt-escapes")
     if req.graceful_timeout > 0:
